@@ -1,0 +1,9 @@
+{
+  "id": "zotero-annotations",
+  "name": "Zotero Annotations",
+  "version": "0.1.0",
+  "minAppVersion": "1.4.0",
+  "description": "Automatically show Zotero PDF annotations in a sidebar when the cursor is on a zotero:// link.",
+  "author": "Benjamin",
+  "isDesktopOnly": true
+}

@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-zotero-annotations",
+  "version": "0.1.0",
+  "description": "Automatically show Zotero PDF annotations in a sidebar when cursor is on a zotero:// link",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+  },
+  "keywords": ["obsidian", "zotero", "annotations"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "esbuild": "0.20.0",
+    "obsidian": "latest",
+    "typescript": "5.3.3",
+    "builtin-modules": "3.3.0"
+  }
+}
