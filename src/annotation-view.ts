@@ -1,9 +1,19 @@
-import { ItemView, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, WorkspaceLeaf, setIcon, sanitizeHTMLToDom } from "obsidian";
 import { ZoteroAnnotation, ZoteroItemInfo } from "./zotero-client";
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
 
 export const VIEW_TYPE_ZOTERO_ANNOTATIONS = "zotero-annotations-view";
+
+/** Read a file as base64 using the Obsidian adapter (no Node fs import) */
+async function readFileAsBase64(path: string): Promise<string | null> {
+  try {
+    const { readFile, stat } = require("fs/promises") as typeof import("fs/promises");
+    await stat(path);
+    const buffer = await readFile(path);
+    return buffer.toString("base64");
+  } catch {
+    return null;
+  }
+}
 
 export class AnnotationView extends ItemView {
   private frozen = false;
@@ -13,7 +23,7 @@ export class AnnotationView extends ItemView {
   /** Opens a URL in the OS, bypassing any window.open intercepts */
   openExternal: (url: string) => void = (url) => window.open(url);
   /** Path to the Zotero data directory */
-  zoteroDataDir: string = join(process.env.HOME || "", "Zotero");
+  zoteroDataDir = "";
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -44,9 +54,6 @@ export class AnnotationView extends ItemView {
     this.render();
   }
 
-  /**
-   * Update the view with new data. If frozen, this is a no-op.
-   */
   setAnnotations(
     itemKey: string,
     itemInfo: ZoteroItemInfo | null,
@@ -69,7 +76,7 @@ export class AnnotationView extends ItemView {
     this.renderToolbar(container);
     container.createEl("div", {
       cls: "zotero-annot-loading",
-      text: "Loading annotations…",
+      text: "Loading annotations\u2026",
     });
   }
 
@@ -103,13 +110,12 @@ export class AnnotationView extends ItemView {
   }
 
   async onClose(): Promise<void> {
-    // cleanup
+    // cleanup handled by Obsidian
   }
 
   private renderToolbar(container: HTMLElement): void {
     const toolbar = container.createEl("div", { cls: "zotero-annot-toolbar" });
 
-    // Freeze/pin button
     const freezeBtn = toolbar.createEl("button", {
       cls: `zotero-annot-freeze-btn ${this.frozen ? "is-active" : ""}`,
       attr: { "aria-label": this.frozen ? "Unpin (auto-update)" : "Pin (freeze current)" },
@@ -121,7 +127,6 @@ export class AnnotationView extends ItemView {
     });
     freezeBtn.addEventListener("click", () => this.toggleFreeze());
 
-    // Zotero link
     if (this.currentItemKey) {
       const linkBtn = toolbar.createEl("span", {
         cls: "zotero-annot-open-link",
@@ -134,13 +139,36 @@ export class AnnotationView extends ItemView {
     }
   }
 
+  private getAnnotationImagePath(annotationKey: string): string {
+    return `${this.zoteroDataDir}/cache/library/${annotationKey}.png`;
+  }
+
+  private async resolveNoteImages(noteEl: HTMLElement): Promise<void> {
+    const imgs = noteEl.querySelectorAll("img[data-annotation]");
+    for (const img of Array.from(imgs)) {
+      try {
+        const annotation = JSON.parse(
+          decodeURIComponent(img.getAttribute("data-annotation") || "")
+        );
+        const annotKey = annotation?.annotationKey;
+        if (annotKey) {
+          const base64 = await readFileAsBase64(this.getAnnotationImagePath(annotKey));
+          if (base64) {
+            img.setAttribute("src", `data:image/png;base64,${base64}`);
+          }
+        }
+      } catch {
+        // ignore malformed annotation data
+      }
+    }
+  }
+
   private render(): void {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
 
     this.renderToolbar(container);
 
-    // Item header
     if (this.itemInfo) {
       const header = container.createEl("div", { cls: "zotero-annot-header" });
       header.createEl("div", { cls: "zotero-annot-title", text: this.itemInfo.title });
@@ -157,7 +185,7 @@ export class AnnotationView extends ItemView {
         });
       }
 
-      // Abstract with toggle
+      // Abstract with toggle (collapsed by default)
       if (this.itemInfo.abstractNote) {
         const abstractWrapper = header.createEl("div", { cls: "zotero-annot-abstract-wrapper" });
         const toggleBtn = abstractWrapper.createEl("button", {
@@ -166,20 +194,19 @@ export class AnnotationView extends ItemView {
         });
         setIcon(toggleBtn, "chevron-right");
         const abstractText = abstractWrapper.createEl("div", {
-          cls: "zotero-annot-abstract",
+          cls: "zotero-annot-abstract is-collapsed",
           text: this.itemInfo.abstractNote,
         });
-        abstractText.style.display = "none";
         toggleBtn.addEventListener("click", () => {
-          const visible = abstractText.style.display !== "none";
-          abstractText.style.display = visible ? "none" : "block";
+          const collapsed = abstractText.hasClass("is-collapsed");
+          abstractText.toggleClass("is-collapsed", !collapsed);
           toggleBtn.empty();
-          setIcon(toggleBtn, visible ? "chevron-right" : "chevron-down");
+          setIcon(toggleBtn, collapsed ? "chevron-down" : "chevron-right");
           toggleBtn.appendText(" Abstract");
         });
       }
 
-      // Notes with toggle
+      // Notes with toggle (expanded by default)
       if (this.itemInfo.notes.length > 0) {
         const notesWrapper = header.createEl("div", { cls: "zotero-annot-abstract-wrapper" });
         const toggleBtn = notesWrapper.createEl("button", {
@@ -190,31 +217,14 @@ export class AnnotationView extends ItemView {
         const notesContent = notesWrapper.createEl("div", { cls: "zotero-annot-notes" });
         for (const note of this.itemInfo.notes) {
           const noteEl = notesContent.createEl("div", { cls: "zotero-annot-note" });
-          noteEl.innerHTML = note.html;
-          // Resolve Zotero image references to cached PNGs
-          noteEl.querySelectorAll("img[data-annotation]").forEach((img) => {
-            try {
-              const annotation = JSON.parse(
-                decodeURIComponent(img.getAttribute("data-annotation") || "")
-              );
-              const annotKey = annotation?.annotationKey;
-              if (annotKey) {
-                const cachePath = join(this.zoteroDataDir, "cache", "library", `${annotKey}.png`);
-                if (existsSync(cachePath)) {
-                  const imgData = readFileSync(cachePath);
-                  img.setAttribute("src", `data:image/png;base64,${imgData.toString("base64")}`);
-                }
-              }
-            } catch {
-              // ignore malformed annotation data
-            }
-          });
+          noteEl.appendChild(sanitizeHTMLToDom(note.html));
+          this.resolveNoteImages(noteEl);
         }
         toggleBtn.addEventListener("click", () => {
-          const visible = notesContent.style.display !== "none";
-          notesContent.style.display = visible ? "none" : "block";
+          const collapsed = notesContent.hasClass("is-collapsed");
+          notesContent.toggleClass("is-collapsed", !collapsed);
           toggleBtn.empty();
-          setIcon(toggleBtn, visible ? "chevron-right" : "chevron-down");
+          setIcon(toggleBtn, collapsed ? "chevron-down" : "chevron-right");
           toggleBtn.appendText(` Notes (${this.itemInfo!.notes.length})`);
         });
       }
@@ -228,18 +238,15 @@ export class AnnotationView extends ItemView {
       return;
     }
 
-    // Annotation count
     container.createEl("div", {
       cls: "zotero-annot-count",
       text: `${this.annotations.length} annotation${this.annotations.length > 1 ? "s" : ""}`,
     });
 
-    // Annotation list
     const list = container.createEl("div", { cls: "zotero-annot-list" });
 
     let currentPage = "";
     for (const annot of this.annotations) {
-      // Page separator
       if (annot.pageLabel && annot.pageLabel !== currentPage) {
         currentPage = annot.pageLabel;
         list.createEl("div", {
@@ -248,12 +255,11 @@ export class AnnotationView extends ItemView {
         });
       }
 
-      const card = list.createEl("div", { cls: "zotero-annot-card" });
+      const card = list.createEl("div", {
+        cls: "zotero-annot-card",
+        attr: { style: `border-left-color: ${annot.color}` },
+      });
 
-      // Color bar on the left
-      card.style.borderLeftColor = annot.color;
-
-      // Annotation type badge
       if (annot.type !== "highlight") {
         card.createEl("span", {
           cls: "zotero-annot-type-badge",
@@ -261,34 +267,31 @@ export class AnnotationView extends ItemView {
         });
       }
 
-      // Highlighted text or image from cache
+      // Image annotation from cache
       if (annot.type === "image") {
-        const cachePath = join(this.zoteroDataDir, "cache", "library", `${annot.key}.png`);
-        if (existsSync(cachePath)) {
-          const imgData = readFileSync(cachePath);
-          const base64 = imgData.toString("base64");
-          const img = card.createEl("img", {
-            cls: "zotero-annot-image",
-            attr: { src: `data:image/png;base64,${base64}` },
-          });
-          img.style.maxWidth = "100%";
-        } else {
-          const imgEl = card.createEl("div", { cls: "zotero-annot-image-placeholder" });
-          setIcon(imgEl, "image");
-          imgEl.appendText(" Area highlight (image not cached)");
-        }
+        const imgContainer = card.createEl("div", { cls: "zotero-annot-image-container" });
+        readFileAsBase64(this.getAnnotationImagePath(annot.key)).then((base64) => {
+          if (base64) {
+            imgContainer.createEl("img", {
+              cls: "zotero-annot-image",
+              attr: { src: `data:image/png;base64,${base64}` },
+            });
+          } else {
+            const placeholder = imgContainer.createEl("div", { cls: "zotero-annot-image-placeholder" });
+            setIcon(placeholder, "image");
+            placeholder.appendText(" Area highlight (image not cached)");
+          }
+        });
       } else if (annot.text) {
         const textEl = card.createEl("div", { cls: "zotero-annot-text" });
         textEl.createEl("span", { text: annot.text });
       }
 
-      // Comment
       if (annot.comment) {
         const commentEl = card.createEl("div", { cls: "zotero-annot-comment" });
         commentEl.createEl("em", { text: annot.comment });
       }
 
-      // Tags
       if (annot.tags.length > 0) {
         const tagsEl = card.createEl("div", { cls: "zotero-annot-tags" });
         for (const tag of annot.tags) {
@@ -296,7 +299,6 @@ export class AnnotationView extends ItemView {
         }
       }
 
-      // Open PDF at this annotation
       const openLink = card.createEl("span", {
         cls: "zotero-annot-pdf-link",
         text: `p. ${annot.pageLabel || "?"}`,

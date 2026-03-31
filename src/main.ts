@@ -1,11 +1,27 @@
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Plugin, PluginSettingTab, Setting, App } from "obsidian";
 import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
 import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
 import { fetchAnnotations, fetchItemInfo, isZoteroRunning } from "./zotero-client";
-import { STYLES } from "./styles";
+
+interface ZoteroAnnotationsSettings {
+  zoteroDataDir: string;
+}
+
+function getDefaultZoteroDataDir(): string {
+  try {
+    const os = require("os") as typeof import("os");
+    return `${os.homedir()}/Zotero`;
+  } catch {
+    return "";
+  }
+}
+
+const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
+  zoteroDataDir: getDefaultZoteroDataDir(),
+};
 
 export default class ZoteroAnnotationsPlugin extends Plugin {
-  private styleEl: HTMLStyleElement | null = null;
+  settings: ZoteroAnnotationsSettings = DEFAULT_SETTINGS;
   /** Debounce timer for cursor changes */
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private originalWindowOpen: typeof window.open | null = null;
@@ -16,6 +32,9 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   >();
 
   async onload(): Promise<void> {
+    await this.loadSettings();
+    this.addSettingTab(new ZoteroAnnotationsSettingTab(this.app, this));
+
     // Save original window.open and patch it to intercept zotero://select/ links
     const origOpen = window.open;
     this.originalWindowOpen = origOpen;
@@ -25,20 +44,19 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       const url = typeof args[0] === "string" ? args[0] : args[0]?.toString() || "";
       const key = extractZoteroKey(url);
       if (key && url.includes("zotero://select/") && !bypassIntercept) {
-        self.ensureSidebarOpen().then(() => self.loadAnnotations(key));
+        (async () => {
+          await self.ensureSidebarOpen();
+          await self.loadAnnotations(key);
+        })();
         return null;
       }
       return origOpen.apply(window, args);
     };
 
-    // Inject styles
-    this.styleEl = document.createElement("style");
-    this.styleEl.textContent = STYLES;
-    document.head.appendChild(this.styleEl);
-
     // Register the sidebar view
     this.registerView(VIEW_TYPE_ZOTERO_ANNOTATIONS, (leaf) => {
       const view = new AnnotationView(leaf);
+      view.zoteroDataDir = this.settings.zoteroDataDir;
       view.openExternal = (url: string) => {
         bypassIntercept = true;
         try { origOpen.call(window, url); } finally { bypassIntercept = false; }
@@ -86,32 +104,33 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   }
 
   onunload(): void {
-    // Restore original window.open
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
     if (this.originalWindowOpen) {
       window.open = this.originalWindowOpen;
       this.originalWindowOpen = null;
     }
-    // Remove injected styles
-    if (this.styleEl) {
-      this.styleEl.remove();
-      this.styleEl = null;
-    }
-    // Detach all leaves of our view type
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_ZOTERO_ANNOTATIONS);
   }
 
-  /**
-   * Called by the CM6 plugin whenever the detected item key changes.
-   * Debounced to avoid rapid-fire API calls while arrowing through text.
-   */
+  async loadSettings(): Promise<void> {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
+  }
+
   private onItemKeyChanged(itemKey: string | null): void {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
 
-    this.debounceTimer = setTimeout(() => {
+    this.debounceTimer = setTimeout(async () => {
       if (itemKey) {
-        this.ensureSidebarOpen().then(() => this.loadAnnotations(itemKey));
+        await this.ensureSidebarOpen();
+        await this.loadAnnotations(itemKey);
       } else {
         const view = this.getView();
         if (view && !view.isFrozen()) {
@@ -121,19 +140,14 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     }, 300);
   }
 
-  /**
-   * Fetch annotations for the given item key and update the sidebar.
-   */
   private async loadAnnotations(itemKey: string): Promise<void> {
     const view = this.getView();
     if (!view || view.isFrozen()) return;
 
-    // Already showing this item?
     if (view.getCurrentItemKey() === itemKey && this.cache.has(itemKey)) {
       return;
     }
 
-    // Check cache
     const cached = this.cache.get(itemKey);
     if (cached) {
       view.setAnnotations(itemKey, cached.info, cached.annotations);
@@ -142,10 +156,9 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
     view.showLoading(itemKey);
 
-    // Check Zotero is running
     const running = await isZoteroRunning();
     if (!running) {
-      view.showError("Cannot reach Zotero. Make sure Zotero is running and the local API is enabled in Settings → Advanced.");
+      view.showError("Cannot reach Zotero. Make sure Zotero is running and the local API is enabled in Settings \u2192 Advanced.");
       return;
     }
 
@@ -155,10 +168,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         fetchAnnotations(itemKey),
       ]);
 
-      // Cache the result
       this.cache.set(itemKey, { info, annotations });
 
-      // View may have moved on (user moved cursor) — only update if still relevant
       if (view.getCurrentItemKey() === itemKey || !view.isFrozen()) {
         view.setAnnotations(itemKey, info, annotations);
       }
@@ -195,5 +206,32 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     } else {
       await this.ensureSidebarOpen();
     }
+  }
+}
+
+class ZoteroAnnotationsSettingTab extends PluginSettingTab {
+  plugin: ZoteroAnnotationsPlugin;
+
+  constructor(app: App, plugin: ZoteroAnnotationsPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName("Zotero data directory")
+      .setDesc("Path to your Zotero data folder (used to load annotation images from cache)")
+      .addText((text) =>
+        text
+          .setPlaceholder(getDefaultZoteroDataDir())
+          .setValue(this.plugin.settings.zoteroDataDir)
+          .onChange(async (value) => {
+            this.plugin.settings.zoteroDataDir = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }

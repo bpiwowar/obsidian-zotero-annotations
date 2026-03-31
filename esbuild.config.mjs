@@ -2,8 +2,8 @@ import esbuild from "esbuild";
 import process from "process";
 import builtins from "builtin-modules";
 
-import { readFileSync, existsSync } from "fs";
-import { resolve } from "path";
+import { readFileSync, existsSync, copyFileSync } from "fs";
+import { resolve, dirname } from "path";
 
 const prod = process.argv[2] === "production";
 const watch = process.argv.includes("--watch");
@@ -45,10 +45,18 @@ const buildOptions = {
   minify: prod,
 };
 
+function copyStyles() {
+  const outDir = dirname(outfile);
+  if (outDir !== ".") {
+    copyFileSync("styles.css", resolve(outDir, "styles.css"));
+  }
+}
+
 if (watch) {
   const ctx = await esbuild.context(buildOptions);
   await ctx.watch();
+  copyStyles();
   console.log("Watching for changes...");
 } else {
-  esbuild.build(buildOptions).catch(() => process.exit(1));
+  esbuild.build(buildOptions).then(() => copyStyles()).catch(() => process.exit(1));
 }
