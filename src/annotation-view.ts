@@ -1,12 +1,11 @@
 import { ItemView, WorkspaceLeaf, setIcon, sanitizeHTMLToDom } from "obsidian";
 import { ZoteroAnnotation, ZoteroItemInfo } from "./zotero-client";
+import { readFile, stat } from "fs/promises";
 
 export const VIEW_TYPE_ZOTERO_ANNOTATIONS = "zotero-annotations-view";
 
-/** Read a file as base64 using the Obsidian adapter (no Node fs import) */
 async function readFileAsBase64(path: string): Promise<string | null> {
   try {
-    const { readFile, stat } = require("fs/promises") as typeof import("fs/promises");
     await stat(path);
     const buffer = await readFile(path);
     return buffer.toString("base64");
@@ -34,7 +33,7 @@ export class AnnotationView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Zotero Annotations";
+    return "Zotero annotations";
   }
 
   getIcon(): string {
@@ -51,7 +50,7 @@ export class AnnotationView extends ItemView {
 
   toggleFreeze(): void {
     this.frozen = !this.frozen;
-    this.render();
+    void this.render();
   }
 
   setAnnotations(
@@ -63,7 +62,7 @@ export class AnnotationView extends ItemView {
     this.currentItemKey = itemKey;
     this.itemInfo = itemInfo;
     this.annotations = annotations;
-    this.render();
+    void this.render();
   }
 
   showLoading(itemKey: string): void {
@@ -105,10 +104,12 @@ export class AnnotationView extends ItemView {
     });
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async onOpen(): Promise<void> {
     this.showEmpty();
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async onClose(): Promise<void> {
     // cleanup handled by Obsidian
   }
@@ -218,7 +219,7 @@ export class AnnotationView extends ItemView {
         for (const note of this.itemInfo.notes) {
           const noteEl = notesContent.createEl("div", { cls: "zotero-annot-note" });
           noteEl.appendChild(sanitizeHTMLToDom(note.html));
-          this.resolveNoteImages(noteEl);
+          await this.resolveNoteImages(noteEl);
         }
         toggleBtn.addEventListener("click", () => {
           const collapsed = notesContent.hasClass("is-collapsed");

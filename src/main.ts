@@ -2,30 +2,20 @@ import { Plugin, PluginSettingTab, Setting, App } from "obsidian";
 import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
 import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
 import { fetchAnnotations, fetchItemInfo, isZoteroRunning } from "./zotero-client";
+import { homedir } from "os";
 
 interface ZoteroAnnotationsSettings {
   zoteroDataDir: string;
 }
 
-function getDefaultZoteroDataDir(): string {
-  try {
-    const os = require("os") as typeof import("os");
-    return `${os.homedir()}/Zotero`;
-  } catch {
-    return "";
-  }
-}
-
 const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
-  zoteroDataDir: getDefaultZoteroDataDir(),
+  zoteroDataDir: `${homedir()}/Zotero`,
 };
 
 export default class ZoteroAnnotationsPlugin extends Plugin {
   settings: ZoteroAnnotationsSettings = DEFAULT_SETTINGS;
-  /** Debounce timer for cursor changes */
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private originalWindowOpen: typeof window.open | null = null;
-  /** Cache: itemKey → fetched annotations (avoid re-fetching on every cursor move) */
   private cache = new Map<
     string,
     { info: Awaited<ReturnType<typeof fetchItemInfo>>; annotations: Awaited<ReturnType<typeof fetchAnnotations>> }
@@ -39,14 +29,13 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     const origOpen = window.open;
     this.originalWindowOpen = origOpen;
     let bypassIntercept = false;
-    const self = this;
     window.open = (...args: Parameters<typeof window.open>) => {
       const url = typeof args[0] === "string" ? args[0] : args[0]?.toString() || "";
       const key = extractZoteroKey(url);
       if (key && url.includes("zotero://select/") && !bypassIntercept) {
-        (async () => {
-          await self.ensureSidebarOpen();
-          await self.loadAnnotations(key);
+        void (async () => {
+          await this.ensureSidebarOpen();
+          await this.loadAnnotations(key);
         })();
         return null;
       }
@@ -69,24 +58,21 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       createCursorDetectorPlugin((itemKey) => this.onItemKeyChanged(itemKey))
     );
 
-    // Command: toggle sidebar
     this.addCommand({
       id: "toggle-annotations-sidebar",
-      name: "Toggle Zotero Annotations sidebar",
-      callback: () => this.toggleSidebar(),
+      name: "Toggle annotations sidebar",
+      callback: () => void this.toggleSidebar(),
     });
 
-    // Command: freeze/unfreeze
     this.addCommand({
       id: "toggle-freeze",
-      name: "Pin/Unpin annotations sidebar",
+      name: "Pin/unpin annotations sidebar",
       callback: () => {
         const view = this.getView();
         if (view) view.toggleFreeze();
       },
     });
 
-    // Command: refresh current
     this.addCommand({
       id: "refresh-annotations",
       name: "Refresh current annotations",
@@ -96,7 +82,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
           const key = view.getCurrentItemKey();
           if (key) {
             this.cache.delete(key);
-            this.loadAnnotations(key);
+            void this.loadAnnotations(key);
           }
         }
       },
@@ -127,10 +113,12 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       clearTimeout(this.debounceTimer);
     }
 
-    this.debounceTimer = setTimeout(async () => {
+    this.debounceTimer = setTimeout(() => {
       if (itemKey) {
-        await this.ensureSidebarOpen();
-        await this.loadAnnotations(itemKey);
+        void (async () => {
+          await this.ensureSidebarOpen();
+          await this.loadAnnotations(itemKey);
+        })();
       } else {
         const view = this.getView();
         if (view && !view.isFrozen()) {
@@ -226,7 +214,7 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
       .setDesc("Path to your Zotero data folder (used to load annotation images from cache)")
       .addText((text) =>
         text
-          .setPlaceholder(getDefaultZoteroDataDir())
+          .setPlaceholder(DEFAULT_SETTINGS.zoteroDataDir)
           .setValue(this.plugin.settings.zoteroDataDir)
           .onChange(async (value) => {
             this.plugin.settings.zoteroDataDir = value;
