@@ -163,7 +163,7 @@ export class AnnotationView extends ItemView {
     }
   }
 
-  private render(): void {
+  private async render(): Promise<void> {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
 
@@ -270,18 +270,17 @@ export class AnnotationView extends ItemView {
       // Image annotation from cache
       if (annot.type === "image") {
         const imgContainer = card.createEl("div", { cls: "zotero-annot-image-container" });
-        readFileAsBase64(this.getAnnotationImagePath(annot.key)).then((base64) => {
-          if (base64) {
-            imgContainer.createEl("img", {
-              cls: "zotero-annot-image",
-              attr: { src: `data:image/png;base64,${base64}` },
-            });
-          } else {
-            const placeholder = imgContainer.createEl("div", { cls: "zotero-annot-image-placeholder" });
-            setIcon(placeholder, "image");
-            placeholder.appendText(" Area highlight (image not cached)");
-          }
-        });
+        const base64 = await readFileAsBase64(this.getAnnotationImagePath(annot.key));
+        if (base64) {
+          imgContainer.createEl("img", {
+            cls: "zotero-annot-image",
+            attr: { src: `data:image/png;base64,${base64}` },
+          });
+        } else {
+          const placeholder = imgContainer.createEl("div", { cls: "zotero-annot-image-placeholder" });
+          setIcon(placeholder, "image");
+          placeholder.appendText(" Area highlight (image not cached)");
+        }
       } else if (annot.text) {
         const textEl = card.createEl("div", { cls: "zotero-annot-text" });
         textEl.createEl("span", { text: annot.text });
