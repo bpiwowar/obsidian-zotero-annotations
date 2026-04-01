@@ -1,4 +1,5 @@
-.zotero-annot-toolbar {
+/* All rules scoped under the plugin's view container */
+.view-content .zotero-annot-toolbar {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -7,7 +8,7 @@
   background: var(--background-secondary);
 }
 
-.zotero-annot-freeze-btn {
+.view-content .zotero-annot-freeze-btn {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -20,17 +21,17 @@
   font-size: 12px;
 }
 
-.zotero-annot-freeze-btn.is-active {
+.view-content .zotero-annot-freeze-btn.is-active {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
 }
 
-.zotero-annot-freeze-label {
+.view-content .zotero-annot-freeze-label {
   font-size: 12px;
 }
 
-.zotero-annot-open-link {
+.view-content .zotero-annot-open-link {
   margin-left: auto;
   font-size: 12px;
   color: var(--text-accent);
@@ -38,59 +39,59 @@
   cursor: pointer;
 }
 
-.zotero-annot-open-link:hover {
+.view-content .zotero-annot-open-link:hover {
   text-decoration: underline;
 }
 
-.zotero-annot-header {
+.view-content .zotero-annot-header {
   padding: 10px 12px;
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.zotero-annot-title {
+.view-content .zotero-annot-title {
   font-weight: 600;
   font-size: 14px;
   margin-bottom: 4px;
   color: var(--text-normal);
 }
 
-.zotero-annot-creators {
+.view-content .zotero-annot-creators {
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 2px;
 }
 
-.zotero-annot-date {
+.view-content .zotero-annot-date {
   font-size: 11px;
   color: var(--text-faint);
 }
 
-.zotero-annot-count {
+.view-content .zotero-annot-count {
   padding: 6px 12px;
   font-size: 11px;
   color: var(--text-muted);
   border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.zotero-annot-loading,
-.zotero-annot-empty,
-.zotero-annot-error {
+.view-content .zotero-annot-loading,
+.view-content .zotero-annot-empty,
+.view-content .zotero-annot-error {
   padding: 20px 12px;
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
 }
 
-.zotero-annot-error {
+.view-content .zotero-annot-error {
   color: var(--text-error);
 }
 
-.zotero-annot-list {
+.view-content .zotero-annot-list {
   padding: 8px 0;
   overflow-y: auto;
 }
 
-.zotero-annot-page-header {
+.view-content .zotero-annot-page-header {
   padding: 8px 12px 4px;
   font-size: 11px;
   font-weight: 600;
@@ -99,7 +100,7 @@
   letter-spacing: 0.5px;
 }
 
-.zotero-annot-card {
+.view-content .zotero-annot-card {
   margin: 4px 10px;
   padding: 8px 10px;
   border-left: 3px solid var(--text-faint);
@@ -108,11 +109,11 @@
   position: relative;
 }
 
-.zotero-annot-card:hover {
+.view-content .zotero-annot-card:hover {
   background: var(--background-secondary-alt);
 }
 
-.zotero-annot-type-badge {
+.view-content .zotero-annot-type-badge {
   display: inline-block;
   font-size: 10px;
   padding: 1px 5px;
@@ -123,14 +124,14 @@
   text-transform: capitalize;
 }
 
-.zotero-annot-text {
+.view-content .zotero-annot-text {
   font-size: 13px;
   line-height: 1.4;
   color: var(--text-normal);
   margin-bottom: 4px;
 }
 
-.zotero-annot-comment {
+.view-content .zotero-annot-comment {
   font-size: 12px;
   color: var(--text-muted);
   margin-bottom: 4px;
@@ -138,14 +139,14 @@
   border-left: 2px solid var(--background-modifier-border);
 }
 
-.zotero-annot-tags {
+.view-content .zotero-annot-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
   margin-bottom: 4px;
 }
 
-.zotero-annot-tag {
+.view-content .zotero-annot-tag {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 8px;
@@ -153,22 +154,22 @@
   color: var(--text-muted);
 }
 
-.zotero-annot-pdf-link {
+.view-content .zotero-annot-pdf-link {
   font-size: 11px;
   color: var(--text-accent);
   text-decoration: none;
   cursor: pointer;
 }
 
-.zotero-annot-pdf-link:hover {
+.view-content .zotero-annot-pdf-link:hover {
   text-decoration: underline;
 }
 
-.zotero-annot-notes {
+.view-content .zotero-annot-notes {
   padding: 6px 0 2px 4px;
 }
 
-.zotero-annot-note {
+.view-content .zotero-annot-note {
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-normal);
@@ -177,19 +178,19 @@
   margin-bottom: 6px;
 }
 
-.zotero-annot-note img {
+.view-content .zotero-annot-note img {
   max-width: 100%;
   border-radius: 4px;
   margin: 4px 0;
 }
 
-.zotero-annot-image {
+.view-content .zotero-annot-image {
   max-width: 100%;
   border-radius: 4px;
   margin: 4px 0;
 }
 
-.zotero-annot-image-placeholder {
+.view-content .zotero-annot-image-placeholder {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -199,27 +200,45 @@
   padding: 4px 0;
 }
 
-.zotero-annot-abstract-wrapper {
-  margin-top: 6px;
+.view-content .zotero-annot-section {
+  margin-top: 8px;
 }
 
-.zotero-annot-abstract-toggle {
-  display: flex;
+.view-content .zotero-annot-section-toggle {
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   cursor: pointer;
-  background: none;
-  border: none;
-  padding: 2px 0;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  padding: 3px 8px 3px 4px;
   font-size: 12px;
-  color: var(--text-accent);
+  color: var(--text-muted);
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
-.zotero-annot-abstract-toggle:hover {
-  text-decoration: underline;
+.view-content .zotero-annot-section-toggle:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
 }
 
-.zotero-annot-abstract {
+.view-content .zotero-annot-section-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-faint);
+}
+
+.view-content .zotero-annot-section-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.view-content .zotero-annot-section-label {
+  font-weight: 500;
+}
+
+.view-content .zotero-annot-abstract {
   font-size: 12px;
   line-height: 1.5;
   color: var(--text-muted);
@@ -227,6 +246,7 @@
 }
 
 /* Collapsible sections */
-.is-collapsed {
+.view-content .zotero-annot-abstract.is-collapsed,
+.view-content .zotero-annot-notes.is-collapsed {
   display: none;
 }

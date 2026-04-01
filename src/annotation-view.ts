@@ -187,12 +187,13 @@ export class AnnotationView extends ItemView {
 
       // Abstract with toggle (collapsed by default)
       if (this.itemInfo.abstractNote) {
-        const abstractWrapper = header.createEl("div", { cls: "zotero-annot-abstract-wrapper" });
+        const abstractWrapper = header.createEl("div", { cls: "zotero-annot-section" });
         const toggleBtn = abstractWrapper.createEl("button", {
-          cls: "zotero-annot-abstract-toggle",
-          text: "Abstract",
+          cls: "zotero-annot-section-toggle",
         });
-        setIcon(toggleBtn, "chevron-right");
+        const iconEl = toggleBtn.createEl("span", { cls: "zotero-annot-section-icon" });
+        setIcon(iconEl, "chevron-right");
+        toggleBtn.createEl("span", { cls: "zotero-annot-section-label", text: "Abstract" });
         const abstractText = abstractWrapper.createEl("div", {
           cls: "zotero-annot-abstract is-collapsed",
           text: this.itemInfo.abstractNote,
@@ -200,20 +201,23 @@ export class AnnotationView extends ItemView {
         toggleBtn.addEventListener("click", () => {
           const collapsed = abstractText.hasClass("is-collapsed");
           abstractText.toggleClass("is-collapsed", !collapsed);
-          toggleBtn.empty();
-          setIcon(toggleBtn, collapsed ? "chevron-down" : "chevron-right");
-          toggleBtn.appendText(" Abstract");
+          iconEl.empty();
+          setIcon(iconEl, collapsed ? "chevron-down" : "chevron-right");
         });
       }
 
       // Notes with toggle (expanded by default)
       if (this.itemInfo.notes.length > 0) {
-        const notesWrapper = header.createEl("div", { cls: "zotero-annot-abstract-wrapper" });
+        const notesWrapper = header.createEl("div", { cls: "zotero-annot-section" });
         const toggleBtn = notesWrapper.createEl("button", {
-          cls: "zotero-annot-abstract-toggle",
+          cls: "zotero-annot-section-toggle",
         });
-        setIcon(toggleBtn, "chevron-down");
-        toggleBtn.appendText(` Notes (${this.itemInfo.notes.length})`);
+        const iconEl = toggleBtn.createEl("span", { cls: "zotero-annot-section-icon" });
+        setIcon(iconEl, "chevron-down");
+        toggleBtn.createEl("span", {
+          cls: "zotero-annot-section-label",
+          text: `Notes (${this.itemInfo.notes.length})`,
+        });
         const notesContent = notesWrapper.createEl("div", { cls: "zotero-annot-notes" });
         for (const note of this.itemInfo.notes) {
           const noteEl = notesContent.createEl("div", { cls: "zotero-annot-note" });
@@ -223,9 +227,8 @@ export class AnnotationView extends ItemView {
         toggleBtn.addEventListener("click", () => {
           const collapsed = notesContent.hasClass("is-collapsed");
           notesContent.toggleClass("is-collapsed", !collapsed);
-          toggleBtn.empty();
-          setIcon(toggleBtn, collapsed ? "chevron-down" : "chevron-right");
-          toggleBtn.appendText(` Notes (${this.itemInfo!.notes.length})`);
+          iconEl.empty();
+          setIcon(iconEl, collapsed ? "chevron-down" : "chevron-right");
         });
       }
     }
