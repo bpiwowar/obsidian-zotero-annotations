@@ -89,7 +89,7 @@ export class AnnotationView extends ItemView {
     this.renderToolbar(container);
     container.createEl("div", {
       cls: "zotero-annot-empty",
-      text: "Place your cursor on a zotero:// link to see annotations.",
+      text: "Place your cursor on a Zotero link to see annotations.",
     });
   }
 
@@ -104,12 +104,11 @@ export class AnnotationView extends ItemView {
     });
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
+  // eslint-disable-next-line @typescript-eslint/require-await -- onOpen is required by ItemView to be async but this implementation has no async work
   async onOpen(): Promise<void> {
     this.showEmpty();
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
   async onClose(): Promise<void> {
     // cleanup handled by Obsidian
   }
@@ -150,7 +149,7 @@ export class AnnotationView extends ItemView {
       try {
         const annotation = JSON.parse(
           decodeURIComponent(img.getAttribute("data-annotation") || "")
-        );
+        ) as { annotationKey?: string } | null;
         const annotKey = annotation?.annotationKey;
         if (annotKey) {
           const base64 = await readFileAsBase64(this.getAnnotationImagePath(annotKey));

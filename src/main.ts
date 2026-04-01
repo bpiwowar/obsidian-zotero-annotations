@@ -39,7 +39,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         })();
         return null;
       }
-      return origOpen.apply(window, args);
+      return origOpen.apply(window, args) as WindowProxy | null;
     };
 
     // Register the sidebar view
@@ -101,7 +101,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<ZoteroAnnotationsSettings>);
   }
 
   async saveSettings(): Promise<void> {
