@@ -1,0 +1,15 @@
+repos:
+  - repo: local
+    hooks:
+      - id: eslint
+        name: ESLint (Obsidian plugin guidelines)
+        entry: npx eslint
+        language: system
+        files: ^src/.*\.ts$
+        pass_filenames: true
+      - id: tsc
+        name: TypeScript check
+        entry: npx tsc -noEmit -skipLibCheck
+        language: system
+        files: \.(ts|tsx)$
+        pass_filenames: false
