@@ -1,4 +1,11 @@
-import { ItemView, WorkspaceLeaf, setIcon, sanitizeHTMLToDom } from "obsidian";
+import {
+  ItemView,
+  WorkspaceLeaf,
+  setIcon,
+  sanitizeHTMLToDom,
+  renderMath,
+  finishRenderMath,
+} from "obsidian";
 import { ZoteroAnnotation, ZoteroItemInfo } from "./zotero-client";
 import { readFile, stat } from "fs/promises";
 
@@ -12,6 +19,46 @@ async function readFileAsBase64(path: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// Zotero wraps math in <span class="math">$...$</span> (inline) or <pre class="math">$$...$$</pre> (display).
+function stripMathDelimiters(raw: string): { expr: string; display: boolean } {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("$$") && trimmed.endsWith("$$")) {
+    return { expr: trimmed.slice(2, -2).trim(), display: true };
+  }
+  if (trimmed.startsWith("\\[") && trimmed.endsWith("\\]")) {
+    return { expr: trimmed.slice(2, -2).trim(), display: true };
+  }
+  if (trimmed.startsWith("\\(") && trimmed.endsWith("\\)")) {
+    return { expr: trimmed.slice(2, -2).trim(), display: false };
+  }
+  if (trimmed.startsWith("$") && trimmed.endsWith("$")) {
+    return { expr: trimmed.slice(1, -1).trim(), display: false };
+  }
+  return { expr: trimmed, display: false };
+}
+
+function renderMathInElement(root: HTMLElement): boolean {
+  const mathNodes = root.querySelectorAll(".math, pre.math, span.math");
+  if (mathNodes.length === 0) return false;
+  for (const node of Array.from(mathNodes)) {
+    const raw = node.textContent || "";
+    const { expr, display } = stripMathDelimiters(raw);
+    // <pre class="math"> always renders as display math
+    const isDisplay = display || node.tagName === "PRE";
+    if (!expr) continue;
+    const mathEl = renderMath(expr, isDisplay);
+    if (isDisplay) {
+      const wrapper = document.createElement("div");
+      wrapper.addClass("zotero-annot-math-display");
+      wrapper.appendChild(mathEl);
+      node.replaceWith(wrapper);
+    } else {
+      node.replaceWith(mathEl);
+    }
+  }
+  return true;
 }
 
 export class AnnotationView extends ItemView {
@@ -219,11 +266,14 @@ export class AnnotationView extends ItemView {
           text: `Notes (${this.itemInfo.notes.length})`,
         });
         const notesContent = notesWrapper.createEl("div", { cls: "zotero-annot-notes" });
+        let anyMath = false;
         for (const note of this.itemInfo.notes) {
           const noteEl = notesContent.createEl("div", { cls: "zotero-annot-note" });
           noteEl.appendChild(sanitizeHTMLToDom(note.html));
           await this.resolveNoteImages(noteEl);
+          if (renderMathInElement(noteEl)) anyMath = true;
         }
+        if (anyMath) await finishRenderMath();
         toggleBtn.addEventListener("click", () => {
           const collapsed = notesContent.hasClass("is-collapsed");
           notesContent.toggleClass("is-collapsed", !collapsed);
