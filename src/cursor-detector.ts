@@ -17,6 +17,11 @@ export function extractZoteroKey(url: string): string | null {
 
 export type ZoteroLinkCallback = (itemKey: string | null) => void;
 
+export interface ZoteroLinkHandlers {
+  onChange: ZoteroLinkCallback;
+  onDoubleClick: (itemKey: string) => void;
+}
+
 /**
  * Regex to match a full markdown link whose URL is a zotero:// link:
  * [any text](zotero://select/library/items/ITEMKEY)
@@ -24,33 +29,31 @@ export type ZoteroLinkCallback = (itemKey: string | null) => void;
 const ZOTERO_MD_LINK_RE = /\[[^\]]*\]\(zotero:\/\/select\/library\/items\/([A-Z0-9]{8})\)/gi;
 
 /**
- * Extracts a Zotero item key if the cursor is currently positioned
- * inside (or adjacent to) a zotero:// link in the given editor state.
- * Matches both bare zotero:// URLs and markdown links [text](zotero://...).
+ * Extracts a Zotero item key for a given document position (inside or adjacent
+ * to a zotero:// link). Matches both bare zotero:// URLs and markdown links
+ * [text](zotero://...).
  */
-function getZoteroKeyAtCursor(state: EditorState): string | null {
-  const cursor = state.selection.main.head;
-  const line = state.doc.lineAt(cursor);
+function getZoteroKeyAtPos(state: EditorState, pos: number): string | null {
+  if (pos < 0 || pos > state.doc.length) return null;
+  const line = state.doc.lineAt(pos);
   const lineText = line.text;
   const lineFrom = line.from;
 
-  // First try markdown links [text](zotero://...) — cursor anywhere in the full link
   let match: RegExpExecArray | null;
   const mdRe = new RegExp(ZOTERO_MD_LINK_RE.source, "gi");
   while ((match = mdRe.exec(lineText)) !== null) {
     const linkStart = lineFrom + match.index;
     const linkEnd = linkStart + match[0].length;
-    if (cursor >= linkStart && cursor <= linkEnd) {
+    if (pos >= linkStart && pos <= linkEnd) {
       return match[1].toUpperCase();
     }
   }
 
-  // Fall back to bare zotero:// URLs (not inside markdown link syntax)
   const bareRe = new RegExp(ZOTERO_LINK_RE.source, "gi");
   while ((match = bareRe.exec(lineText)) !== null) {
     const linkStart = lineFrom + match.index;
     const linkEnd = linkStart + match[0].length;
-    if (cursor >= linkStart && cursor <= linkEnd) {
+    if (pos >= linkStart && pos <= linkEnd) {
       return match[1].toUpperCase();
     }
   }
@@ -59,10 +62,11 @@ function getZoteroKeyAtCursor(state: EditorState): string | null {
 }
 
 /**
- * Creates a CodeMirror ViewPlugin that monitors cursor position
- * and calls `onChange` whenever the detected Zotero item key changes.
+ * Creates a CodeMirror ViewPlugin that monitors cursor position and clicks.
+ * Calls `onChange` whenever the detected Zotero item key changes, and
+ * `onDoubleClick` when the user double-clicks on a zotero:// link.
  */
-export function createCursorDetectorPlugin(onChange: ZoteroLinkCallback) {
+export function createCursorDetectorPlugin(handlers: ZoteroLinkHandlers) {
   return ViewPlugin.fromClass(
     class {
       private lastKey: string | null = null;
@@ -79,12 +83,26 @@ export function createCursorDetectorPlugin(onChange: ZoteroLinkCallback) {
       }
 
       private check(state: EditorState) {
-        const key = getZoteroKeyAtCursor(state);
+        const key = getZoteroKeyAtPos(state, state.selection.main.head);
         if (key !== this.lastKey) {
           this.lastKey = key;
-          onChange(key);
+          handlers.onChange(key);
         }
       }
+    },
+    {
+      eventHandlers: {
+        dblclick(event: MouseEvent, view: EditorView) {
+          const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+          if (pos === null) return false;
+          const key = getZoteroKeyAtPos(view.state, pos);
+          if (!key) return false;
+          event.preventDefault();
+          event.stopPropagation();
+          handlers.onDoubleClick(key);
+          return true;
+        },
+      },
     }
   );
 }

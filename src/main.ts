@@ -12,10 +12,14 @@ const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
   zoteroDataDir: `${homedir()}/Zotero`,
 };
 
+const DOUBLE_CLICK_MS = 300;
+
 export default class ZoteroAnnotationsPlugin extends Plugin {
   settings: ZoteroAnnotationsSettings = DEFAULT_SETTINGS;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private originalWindowOpen: typeof window.open | null = null;
+  private pendingClickTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private openInZotero: (url: string) => void = (url) => window.open(url);
   private cache = new Map<
     string,
     { info: Awaited<ReturnType<typeof fetchItemInfo>>; annotations: Awaited<ReturnType<typeof fetchAnnotations>> }
@@ -25,37 +29,69 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     await this.loadSettings();
     this.addSettingTab(new ZoteroAnnotationsSettingTab(this.app, this));
 
-    // Save original window.open and patch it to intercept zotero://select/ links
+    // Save original window.open and patch it to intercept zotero://select/ links.
+    // A single click opens the sidebar (after a short delay to detect double-clicks);
+    // a double click cancels the pending sidebar update and opens the item in Zotero.
     const origOpen = window.open;
     this.originalWindowOpen = origOpen;
     let bypassIntercept = false;
+    const openInZotero = (url: string): void => {
+      bypassIntercept = true;
+      try { origOpen.call(window, url); } finally { bypassIntercept = false; }
+    };
+    this.openInZotero = openInZotero;
     window.open = (...args: Parameters<typeof window.open>) => {
       const url = typeof args[0] === "string" ? args[0] : args[0]?.toString() || "";
       const key = extractZoteroKey(url);
       if (key && url.includes("zotero://select/") && !bypassIntercept) {
-        void (async () => {
-          await this.ensureSidebarOpen();
-          await this.loadAnnotations(key);
-        })();
+        const existing = this.pendingClickTimers.get(key);
+        if (existing) clearTimeout(existing);
+        const timer = setTimeout(() => {
+          this.pendingClickTimers.delete(key);
+          void (async () => {
+            await this.ensureSidebarOpen();
+            await this.loadAnnotations(key);
+          })();
+        }, DOUBLE_CLICK_MS);
+        this.pendingClickTimers.set(key, timer);
         return null;
       }
       return origOpen.apply(window, args) as WindowProxy | null;
     };
 
+    // A dblclick on a zotero://select/ link cancels the pending sidebar update
+    // and opens the item in Zotero instead.
+    this.registerDomEvent(document, "dblclick", (evt: MouseEvent) => {
+      const link = (evt.target as HTMLElement | null)?.closest("a") as HTMLAnchorElement | null;
+      if (!link) return;
+      const href = link.getAttribute("href") || link.href;
+      if (!href.includes("zotero://select/")) return;
+      const key = extractZoteroKey(href);
+      if (!key) return;
+      const pending = this.pendingClickTimers.get(key);
+      if (pending) {
+        clearTimeout(pending);
+        this.pendingClickTimers.delete(key);
+      }
+      evt.preventDefault();
+      evt.stopPropagation();
+      openInZotero(href);
+    });
+
     // Register the sidebar view
     this.registerView(VIEW_TYPE_ZOTERO_ANNOTATIONS, (leaf) => {
       const view = new AnnotationView(leaf);
       view.zoteroDataDir = this.settings.zoteroDataDir;
-      view.openExternal = (url: string) => {
-        bypassIntercept = true;
-        try { origOpen.call(window, url); } finally { bypassIntercept = false; }
-      };
+      view.openExternal = openInZotero;
       return view;
     });
 
-    // Register the CM6 extension for cursor detection
+    // Register the CM6 extension for cursor detection and dblclick handling
     this.registerEditorExtension(
-      createCursorDetectorPlugin((itemKey) => this.onItemKeyChanged(itemKey))
+      createCursorDetectorPlugin({
+        onChange: (itemKey) => this.onItemKeyChanged(itemKey),
+        onDoubleClick: (itemKey) => this.handleDoubleClick(itemKey),
+      })
     );
 
     this.addCommand({
@@ -94,6 +130,10 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    for (const timer of this.pendingClickTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.pendingClickTimers.clear();
     if (this.originalWindowOpen) {
       window.open = this.originalWindowOpen;
       this.originalWindowOpen = null;
@@ -106,6 +146,19 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  private handleDoubleClick(itemKey: string): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    const pending = this.pendingClickTimers.get(itemKey);
+    if (pending) {
+      clearTimeout(pending);
+      this.pendingClickTimers.delete(itemKey);
+    }
+    this.openInZotero(`zotero://select/library/items/${itemKey}`);
   }
 
   private onItemKeyChanged(itemKey: string | null): void {
