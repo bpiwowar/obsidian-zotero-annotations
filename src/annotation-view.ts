@@ -120,7 +120,7 @@ export class AnnotationView extends ItemView {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     this.renderToolbar(container);
-    container.createEl("div", {
+    container.createDiv({
       cls: "zotero-annot-loading",
       text: "Loading annotations\u2026",
     });
@@ -134,7 +134,7 @@ export class AnnotationView extends ItemView {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     this.renderToolbar(container);
-    container.createEl("div", {
+    container.createDiv({
       cls: "zotero-annot-empty",
       text: "Place your cursor on a Zotero link to see annotations.",
     });
@@ -145,13 +145,12 @@ export class AnnotationView extends ItemView {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     this.renderToolbar(container);
-    container.createEl("div", {
+    container.createDiv({
       cls: "zotero-annot-error",
       text: message,
     });
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await -- onOpen is required by ItemView to be async but this implementation has no async work
   async onOpen(): Promise<void> {
     this.showEmpty();
   }
@@ -161,21 +160,21 @@ export class AnnotationView extends ItemView {
   }
 
   private renderToolbar(container: HTMLElement): void {
-    const toolbar = container.createEl("div", { cls: "zotero-annot-toolbar" });
+    const toolbar = container.createDiv({ cls: "zotero-annot-toolbar" });
 
     const freezeBtn = toolbar.createEl("button", {
       cls: `zotero-annot-freeze-btn ${this.frozen ? "is-active" : ""}`,
       attr: { "aria-label": this.frozen ? "Unpin (auto-update)" : "Pin (freeze current)" },
     });
     setIcon(freezeBtn, this.frozen ? "pin-off" : "pin");
-    freezeBtn.createEl("span", {
+    freezeBtn.createSpan({
       text: this.frozen ? " Pinned" : " Auto",
       cls: "zotero-annot-freeze-label",
     });
     freezeBtn.addEventListener("click", () => this.toggleFreeze());
 
     if (this.currentItemKey) {
-      const linkBtn = toolbar.createEl("span", {
+      const linkBtn = toolbar.createSpan({
         cls: "zotero-annot-open-link",
         text: "Open in Zotero",
       });
@@ -217,16 +216,16 @@ export class AnnotationView extends ItemView {
     this.renderToolbar(container);
 
     if (this.itemInfo) {
-      const header = container.createEl("div", { cls: "zotero-annot-header" });
-      header.createEl("div", { cls: "zotero-annot-title", text: this.itemInfo.title });
+      const header = container.createDiv({ cls: "zotero-annot-header" });
+      header.createDiv({ cls: "zotero-annot-title", text: this.itemInfo.title });
       if (this.itemInfo.creators) {
-        header.createEl("div", {
+        header.createDiv({
           cls: "zotero-annot-creators",
           text: this.itemInfo.creators,
         });
       }
       if (this.itemInfo.date) {
-        header.createEl("span", {
+        header.createSpan({
           cls: "zotero-annot-date",
           text: this.itemInfo.date,
         });
@@ -234,14 +233,14 @@ export class AnnotationView extends ItemView {
 
       // Abstract with toggle (collapsed by default)
       if (this.itemInfo.abstractNote) {
-        const abstractWrapper = header.createEl("div", { cls: "zotero-annot-section" });
+        const abstractWrapper = header.createDiv({ cls: "zotero-annot-section" });
         const toggleBtn = abstractWrapper.createEl("button", {
           cls: "zotero-annot-section-toggle",
         });
-        const iconEl = toggleBtn.createEl("span", { cls: "zotero-annot-section-icon" });
+        const iconEl = toggleBtn.createSpan({ cls: "zotero-annot-section-icon" });
         setIcon(iconEl, "chevron-right");
-        toggleBtn.createEl("span", { cls: "zotero-annot-section-label", text: "Abstract" });
-        const abstractText = abstractWrapper.createEl("div", {
+        toggleBtn.createSpan({ cls: "zotero-annot-section-label", text: "Abstract" });
+        const abstractText = abstractWrapper.createDiv({
           cls: "zotero-annot-abstract is-collapsed",
           text: this.itemInfo.abstractNote,
         });
@@ -255,20 +254,20 @@ export class AnnotationView extends ItemView {
 
       // Notes with toggle (expanded by default)
       if (this.itemInfo.notes.length > 0) {
-        const notesWrapper = header.createEl("div", { cls: "zotero-annot-section" });
+        const notesWrapper = header.createDiv({ cls: "zotero-annot-section" });
         const toggleBtn = notesWrapper.createEl("button", {
           cls: "zotero-annot-section-toggle",
         });
-        const iconEl = toggleBtn.createEl("span", { cls: "zotero-annot-section-icon" });
+        const iconEl = toggleBtn.createSpan({ cls: "zotero-annot-section-icon" });
         setIcon(iconEl, "chevron-down");
-        toggleBtn.createEl("span", {
+        toggleBtn.createSpan({
           cls: "zotero-annot-section-label",
           text: `Notes (${this.itemInfo.notes.length})`,
         });
-        const notesContent = notesWrapper.createEl("div", { cls: "zotero-annot-notes" });
+        const notesContent = notesWrapper.createDiv({ cls: "zotero-annot-notes" });
         let anyMath = false;
         for (const note of this.itemInfo.notes) {
-          const noteEl = notesContent.createEl("div", { cls: "zotero-annot-note" });
+          const noteEl = notesContent.createDiv({ cls: "zotero-annot-note" });
           noteEl.appendChild(sanitizeHTMLToDom(note.html));
           await this.resolveNoteImages(noteEl);
           if (renderMathInElement(noteEl)) anyMath = true;
@@ -284,37 +283,37 @@ export class AnnotationView extends ItemView {
     }
 
     if (this.annotations.length === 0) {
-      container.createEl("div", {
+      container.createDiv({
         cls: "zotero-annot-empty",
         text: "No annotations found for this item.",
       });
       return;
     }
 
-    container.createEl("div", {
+    container.createDiv({
       cls: "zotero-annot-count",
       text: `${this.annotations.length} annotation${this.annotations.length > 1 ? "s" : ""}`,
     });
 
-    const list = container.createEl("div", { cls: "zotero-annot-list" });
+    const list = container.createDiv({ cls: "zotero-annot-list" });
 
     let currentPage = "";
     for (const annot of this.annotations) {
       if (annot.pageLabel && annot.pageLabel !== currentPage) {
         currentPage = annot.pageLabel;
-        list.createEl("div", {
+        list.createDiv({
           cls: "zotero-annot-page-header",
           text: `Page ${currentPage}`,
         });
       }
 
-      const card = list.createEl("div", {
+      const card = list.createDiv({
         cls: "zotero-annot-card",
         attr: { style: `border-left-color: ${annot.color}` },
       });
 
       if (annot.type !== "highlight") {
-        card.createEl("span", {
+        card.createSpan({
           cls: "zotero-annot-type-badge",
           text: annot.type,
         });
@@ -322,7 +321,7 @@ export class AnnotationView extends ItemView {
 
       // Image annotation from cache
       if (annot.type === "image") {
-        const imgContainer = card.createEl("div", { cls: "zotero-annot-image-container" });
+        const imgContainer = card.createDiv({ cls: "zotero-annot-image-container" });
         const base64 = await readFileAsBase64(this.getAnnotationImagePath(annot.key));
         if (base64) {
           imgContainer.createEl("img", {
@@ -330,28 +329,28 @@ export class AnnotationView extends ItemView {
             attr: { src: `data:image/png;base64,${base64}` },
           });
         } else {
-          const placeholder = imgContainer.createEl("div", { cls: "zotero-annot-image-placeholder" });
+          const placeholder = imgContainer.createDiv({ cls: "zotero-annot-image-placeholder" });
           setIcon(placeholder, "image");
           placeholder.appendText(" Area highlight (image not cached)");
         }
       } else if (annot.text) {
-        const textEl = card.createEl("div", { cls: "zotero-annot-text" });
-        textEl.createEl("span", { text: annot.text });
+        const textEl = card.createDiv({ cls: "zotero-annot-text" });
+        textEl.createSpan({ text: annot.text });
       }
 
       if (annot.comment) {
-        const commentEl = card.createEl("div", { cls: "zotero-annot-comment" });
+        const commentEl = card.createDiv({ cls: "zotero-annot-comment" });
         commentEl.createEl("em", { text: annot.comment });
       }
 
       if (annot.tags.length > 0) {
-        const tagsEl = card.createEl("div", { cls: "zotero-annot-tags" });
+        const tagsEl = card.createDiv({ cls: "zotero-annot-tags" });
         for (const tag of annot.tags) {
-          tagsEl.createEl("span", { cls: "zotero-annot-tag", text: `#${tag}` });
+          tagsEl.createSpan({ cls: "zotero-annot-tag", text: `#${tag}` });
         }
       }
 
-      const openLink = card.createEl("span", {
+      const openLink = card.createSpan({
         cls: "zotero-annot-pdf-link",
         text: `p. ${annot.pageLabel || "?"}`,
       });

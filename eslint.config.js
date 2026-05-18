@@ -13,17 +13,12 @@ export default defineConfig([
       globals: {
         ...globals.browser,
         ...globals.node,
+        activeWindow: "readonly",
+        activeDocument: "readonly",
       },
     },
     rules: {
       "obsidianmd/sample-names": "off",
-    },
-  },
-  // @codemirror packages are provided by Obsidian at runtime, not direct dependencies
-  {
-    files: ["src/cursor-detector.ts"],
-    rules: {
-      "import/no-extraneous-dependencies": "off",
     },
   },
 ]);

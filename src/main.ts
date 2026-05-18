@@ -16,9 +16,9 @@ const DOUBLE_CLICK_MS = 300;
 
 export default class ZoteroAnnotationsPlugin extends Plugin {
   settings: ZoteroAnnotationsSettings = DEFAULT_SETTINGS;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private debounceTimer: number | null = null;
   private originalWindowOpen: typeof window.open | null = null;
-  private pendingClickTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private pendingClickTimers = new Map<string, number>();
   private openInZotero: (url: string) => void = (url) => window.open(url);
   private cache = new Map<
     string,
@@ -45,8 +45,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       const key = extractZoteroKey(url);
       if (key && url.includes("zotero://select/") && !bypassIntercept) {
         const existing = this.pendingClickTimers.get(key);
-        if (existing) clearTimeout(existing);
-        const timer = setTimeout(() => {
+        if (existing) activeWindow.clearTimeout(existing);
+        const timer = activeWindow.setTimeout(() => {
           this.pendingClickTimers.delete(key);
           void (async () => {
             await this.ensureSidebarOpen();
@@ -70,7 +70,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       if (!key) return;
       const pending = this.pendingClickTimers.get(key);
       if (pending) {
-        clearTimeout(pending);
+        activeWindow.clearTimeout(pending);
         this.pendingClickTimers.delete(key);
       }
       evt.preventDefault();
@@ -127,11 +127,11 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   onunload(): void {
     if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+      activeWindow.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     for (const timer of this.pendingClickTimers.values()) {
-      clearTimeout(timer);
+      activeWindow.clearTimeout(timer);
     }
     this.pendingClickTimers.clear();
     if (this.originalWindowOpen) {
@@ -150,12 +150,12 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   private handleDoubleClick(itemKey: string): void {
     if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+      activeWindow.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     const pending = this.pendingClickTimers.get(itemKey);
     if (pending) {
-      clearTimeout(pending);
+      activeWindow.clearTimeout(pending);
       this.pendingClickTimers.delete(itemKey);
     }
     this.openInZotero(`zotero://select/library/items/${itemKey}`);
@@ -163,10 +163,10 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   private onItemKeyChanged(itemKey: string | null): void {
     if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+      activeWindow.clearTimeout(this.debounceTimer);
     }
 
-    this.debounceTimer = setTimeout(() => {
+    this.debounceTimer = activeWindow.setTimeout(() => {
       if (itemKey) {
         void (async () => {
           await this.ensureSidebarOpen();
