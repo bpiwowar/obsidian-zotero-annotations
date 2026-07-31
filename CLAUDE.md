@@ -56,6 +56,7 @@ The sidebar has a Pin/Auto toggle. When pinned, cursor movements don't update th
 - Base URL: `http://localhost:23119/api/users/0` (user 0 = personal library)
 - In Zotero 7, annotations are child items of PDF attachment items with `itemType: "annotation"`
 - Annotation fields used: `annotationType`, `annotationText`, `annotationComment`, `annotationColor`, `annotationPageLabel`, `annotationSortIndex`, `tags`
+- Related items live in `data.relations["dc:relation"]` as URIs (`http://zotero.org/users/{userId}/items/{KEY}`); the item key is parsed out of the URI and each related item is fetched individually for its title/creators/year
 - PDF open link: `zotero://open-pdf/library/items/{attachmentKey}?page={pageLabel}`
 
 ### Obsidian APIs used

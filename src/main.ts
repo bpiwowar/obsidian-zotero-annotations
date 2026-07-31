@@ -83,6 +83,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       const view = new AnnotationView(leaf);
       view.zoteroDataDir = this.settings.zoteroDataDir;
       view.openExternal = openInZotero;
+      view.onNavigate = (itemKey) => void this.loadAnnotations(itemKey, true);
       return view;
     });
 
@@ -181,9 +182,13 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     }, 300);
   }
 
-  private async loadAnnotations(itemKey: string): Promise<void> {
+  /**
+   * @param force load even when the sidebar is pinned (explicit user action,
+   *   e.g. clicking a related item)
+   */
+  private async loadAnnotations(itemKey: string, force = false): Promise<void> {
     const view = this.getView();
-    if (!view || view.isFrozen()) return;
+    if (!view || (view.isFrozen() && !force)) return;
 
     if (view.getCurrentItemKey() === itemKey && this.cache.has(itemKey)) {
       return;
@@ -191,15 +196,15 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
     const cached = this.cache.get(itemKey);
     if (cached) {
-      view.setAnnotations(itemKey, cached.info, cached.annotations);
+      view.setAnnotations(itemKey, cached.info, cached.annotations, force);
       return;
     }
 
-    view.showLoading(itemKey);
+    view.showLoading(itemKey, force);
 
     const running = await isZoteroRunning();
     if (!running) {
-      view.showError("Cannot reach Zotero. Make sure Zotero is running and the local API is enabled in Settings \u2192 Advanced.");
+      view.showError("Cannot reach Zotero. Make sure Zotero is running and the local API is enabled in Settings \u2192 Advanced.", force);
       return;
     }
 
@@ -212,11 +217,11 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       this.cache.set(itemKey, { info, annotations });
 
       if (view.getCurrentItemKey() === itemKey || !view.isFrozen()) {
-        view.setAnnotations(itemKey, info, annotations);
+        view.setAnnotations(itemKey, info, annotations, force);
       }
     } catch (e) {
       console.error("Zotero Annotations: error loading annotations", e);
-      view.showError(`Failed to load annotations: ${(e as Error).message}`);
+      view.showError(`Failed to load annotations: ${(e as Error).message}`, force);
     }
   }
 

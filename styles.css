@@ -8,6 +8,39 @@
   background: var(--background-secondary);
 }
 
+.view-content .zotero-annot-back-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 1;
+  min-width: 0;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.view-content .zotero-annot-back-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.view-content .zotero-annot-back-btn svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.view-content .zotero-annot-back-label {
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .view-content .zotero-annot-freeze-btn {
   display: flex;
   align-items: center;
@@ -252,8 +285,61 @@
   padding: 6px 0 2px 4px;
 }
 
+.view-content .zotero-annot-related {
+  padding: 4px 0 2px;
+}
+
+.view-content .zotero-annot-related-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.view-content .zotero-annot-related-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.view-content .zotero-annot-related-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.view-content .zotero-annot-related-title {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-normal);
+}
+
+.view-content .zotero-annot-related-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.view-content .zotero-annot-related-open {
+  display: flex;
+  align-items: center;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.view-content .zotero-annot-related-open svg {
+  width: 13px;
+  height: 13px;
+}
+
+.view-content .zotero-annot-related-item:hover .zotero-annot-related-open {
+  opacity: 1;
+}
+
+.view-content .zotero-annot-related-open:hover {
+  color: var(--text-accent);
+}
+
 /* Collapsible sections */
-.view-content .zotero-annot-abstract.is-collapsed,
-.view-content .zotero-annot-notes.is-collapsed {
+.view-content .zotero-annot-section > .is-collapsed {
   display: none;
 }

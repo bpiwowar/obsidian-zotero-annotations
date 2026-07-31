@@ -36,6 +36,8 @@ export interface ZoteroItemInfo {
   itemType: string;
   abstractNote: string;
   notes: ZoteroNote[];
+  /** Items linked through Zotero's "Related" field */
+  related: ZoteroRelatedItem[];
 }
 
 export interface ZoteroNote {
@@ -43,9 +45,90 @@ export interface ZoteroNote {
   html: string;
 }
 
+export interface ZoteroRelatedItem {
+  key: string;
+  title: string;
+  /** Short form, e.g. "Doe et al." */
+  creators: string;
+  /** 4-digit year, or "" if the date could not be parsed */
+  year: string;
+  itemType: string;
+}
+
 interface ZoteroApiItem {
   key: string;
   data: Record<string, unknown>;
+}
+
+type ZoteroCreator = { firstName?: string; lastName?: string; name?: string };
+
+function creatorList(data: Record<string, unknown>): ZoteroCreator[] {
+  return Array.isArray(data.creators) ? (data.creators as ZoteroCreator[]) : [];
+}
+
+function creatorName(c: ZoteroCreator): string {
+  return c.name || [c.firstName, c.lastName].filter(Boolean).join(" ");
+}
+
+/** "Doe", "Doe & Roe", "Doe et al." */
+function shortCreators(data: Record<string, unknown>): string {
+  const names = creatorList(data)
+    .map((c) => c.lastName || c.name || "")
+    .filter(Boolean);
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} & ${names[1]}`;
+  return `${names[0]} et al.`;
+}
+
+/**
+ * Extract item keys from a Zotero `relations` object. Values of `dc:relation`
+ * are URIs like `http://zotero.org/users/12345/items/ABCD1234` and may be a
+ * single string rather than an array.
+ */
+function extractRelatedKeys(relations: unknown): string[] {
+  if (!relations || typeof relations !== "object") return [];
+  const raw = (relations as Record<string, unknown>)["dc:relation"];
+  const uris = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+  const keys: string[] = [];
+  for (const uri of uris) {
+    if (typeof uri !== "string") continue;
+    const m = /\/items\/([A-Z0-9]+)\/?$/i.exec(uri);
+    if (m) keys.push(m[1]);
+  }
+  return Array.from(new Set(keys));
+}
+
+/** Child item types that are never interesting as a "related paper" */
+const NON_PAPER_TYPES = new Set(["attachment", "note", "annotation"]);
+
+async function fetchRelatedItems(keys: string[]): Promise<ZoteroRelatedItem[]> {
+  const results = await Promise.all(
+    keys.map(async (key): Promise<ZoteroRelatedItem | null> => {
+      try {
+        const item = (await zoteroFetch(`${ZOTERO_BASE}/items/${key}`)) as ZoteroApiItem;
+        const d = item.data;
+        const itemType = (d.itemType as string) || "";
+        if (NON_PAPER_TYPES.has(itemType)) return null;
+        const date = (d.date as string) || "";
+        const year = /\b(\d{4})\b/.exec(date)?.[1] || "";
+        return {
+          key: item.key,
+          title: (d.title as string) || "(untitled)",
+          creators: shortCreators(d),
+          year,
+          itemType,
+        };
+      } catch (e) {
+        console.error(`Zotero Annotations: failed to fetch related item ${key}`, e);
+        return null;
+      }
+    })
+  );
+
+  return results
+    .filter((r): r is ZoteroRelatedItem => r !== null)
+    .sort((a, b) => a.title.localeCompare(b.title));
 }
 
 /**
@@ -58,14 +141,11 @@ export async function fetchItemInfo(itemKey: string): Promise<ZoteroItemInfo | n
       zoteroFetch(`${ZOTERO_BASE}/items/${itemKey}/children`) as Promise<ZoteroApiItem[]>,
     ]);
     const d = item.data;
-    const creators = Array.isArray(d.creators)
-      ? (d.creators as Array<{ firstName?: string; lastName?: string; name?: string }>)
-          .map((c) => c.name || [c.firstName, c.lastName].filter(Boolean).join(" "))
-          .join(", ")
-      : "";
+    const creators = creatorList(d).map(creatorName).join(", ");
     const notes: ZoteroNote[] = children
       .filter((c) => (c.data.itemType as string) === "note")
       .map((c) => ({ key: c.key, html: (c.data.note as string) || "" }));
+    const related = await fetchRelatedItems(extractRelatedKeys(d.relations));
     return {
       key: item.key,
       title: (d.title as string) || "(untitled)",
@@ -74,6 +154,7 @@ export async function fetchItemInfo(itemKey: string): Promise<ZoteroItemInfo | n
       itemType: (d.itemType as string) || "",
       abstractNote: (d.abstractNote as string) || "",
       notes,
+      related,
     };
   } catch (e) {
     console.error("Zotero Annotations: failed to fetch item info", e);
