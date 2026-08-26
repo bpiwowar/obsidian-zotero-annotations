@@ -13,6 +13,7 @@ src/
   annotation-view.ts   # Sidebar ItemView — renders annotations, freeze/pin toggle
   cursor-detector.ts   # CodeMirror 6 ViewPlugin — detects cursor on zotero:// links
   mention-index.ts     # Vault-wide index of notes linking to a Zotero item (cached on disk)
+  paper-outline.ts     # Lays a note's Zotero links out along its heading structure
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
 esbuild.config.mjs     # Build script (esbuild)
@@ -61,6 +62,22 @@ Caching, since scanning a whole vault is the expensive part:
 - Vault `create`/`modify`/`delete`/`rename` events re-scan only the affected note (500 ms debounce), then notify the sidebar so an open section refreshes itself. Events before the first build are ignored (the lazy build reads current state anyway), which also makes Obsidian's startup burst of `create` events free.
 - The index is mirrored to `<plugin dir>/mention-index.json` (per-file mtime + hits, `CACHE_VERSION`-stamped, debounced write). On restart, only notes whose mtime changed are re-read; notes without any Zotero link are still recorded, since their mtime is what lets them be skipped.
 - "Rescan vault for Zotero mentions" command forces a full rebuild.
+
+### Papers in the current note
+
+The sidebar toolbar has a **Papers** button (also the "List Zotero papers in current
+note" command). It reads the `zotero://` links of the note being edited — through
+`MentionIndex.getHitsInFile`, which reads that one note rather than triggering the
+vault-wide scan — resolves each key with `fetchItemSummary` (one request per item,
+cached in memory; an attachment key from an `open-pdf` link is resolved to its parent
+item), and hands the result to `buildPaperOutline`.
+
+`buildPaperOutline` places every link under the last heading above it (headings come
+from `metadataCache.getFileCache(file).headings`), nests the sections by heading level,
+and prunes branches with no paper, so the sidebar mirrors the note's outline. Clicking a
+heading or a line number jumps there in the note; clicking a paper loads its annotations
+(the Back button returns to the list). While the list is on screen the view stops
+following the cursor, exactly as when it is pinned (`AnnotationView.ignoresCursor`).
 
 ### Freeze/Pin
 

@@ -1,8 +1,9 @@
-import { Plugin, PluginSettingTab, Setting, App, TAbstractFile, TFile } from "obsidian";
+import { Plugin, PluginSettingTab, Setting, App, Notice, TAbstractFile, TFile } from "obsidian";
 import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
 import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
-import { fetchAnnotations, fetchItemInfo, isZoteroRunning } from "./zotero-client";
+import { fetchAnnotations, fetchItemInfo, fetchItemSummary, isZoteroRunning } from "./zotero-client";
 import { Mention, MentionIndex } from "./mention-index";
+import { PaperHit, PaperInfo, buildPaperOutline } from "./paper-outline";
 import { homedir } from "os";
 
 interface ZoteroAnnotationsSettings {
@@ -25,6 +26,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     string,
     { info: Awaited<ReturnType<typeof fetchItemInfo>>; annotations: Awaited<ReturnType<typeof fetchAnnotations>> }
   >();
+  /** key → item summary, for the paper list (null = not a paper, or not found) */
+  private summaries = new Map<string, PaperInfo | null>();
   private mentions!: MentionIndex;
 
   async onload(): Promise<void> {
@@ -96,6 +99,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       view.onNavigate = (itemKey) => void this.loadAnnotations(itemKey, true);
       view.mentionProvider = (itemKey) => this.mentions.getMentions(itemKey);
       view.openMention = (mention) => void this.openMention(mention);
+      view.onListPapers = () => void this.showPapersInActiveNote();
       return view;
     });
 
@@ -123,6 +127,12 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "list-papers-in-note",
+      name: "List Zotero papers in current note",
+      callback: () => void this.showPapersInActiveNote(),
+    });
+
+    this.addCommand({
       id: "rescan-mentions",
       name: "Rescan vault for Zotero mentions",
       callback: () => {
@@ -139,6 +149,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
           const key = view.getCurrentItemKey();
           if (key) {
             this.cache.delete(key);
+            this.summaries.delete(key);
             void this.loadAnnotations(key);
           }
         }
@@ -201,6 +212,65 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     );
   }
 
+  /**
+   * Lists every Zotero paper linked from the note being edited, laid out along
+   * its heading structure, in the sidebar.
+   */
+  private async showPapersInActiveNote(): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension !== "md") {
+      new Notice("Open a note to list the papers it mentions.");
+      return;
+    }
+
+    await this.ensureSidebarOpen();
+    const view = this.getView();
+    if (!view) return;
+    view.showPaperListLoading(file.basename);
+
+    const hits = await this.mentions.getHitsInFile(file);
+    const keys = Array.from(new Set(hits.map((h) => h.key)));
+
+    if (keys.some((k) => !this.summaries.has(k)) && !(await isZoteroRunning())) {
+      view.showError(
+        "Cannot reach Zotero. Make sure Zotero is running and the local API is enabled in Settings \u2192 Advanced.",
+        true
+      );
+      return;
+    }
+
+    const resolved = new Map<string, PaperInfo | null>();
+    await Promise.all(
+      keys.map(async (key) => {
+        resolved.set(key, await this.resolveSummary(key));
+      })
+    );
+
+    // The user may have left the paper list while Zotero was being queried
+    if (!view.isShowingPapers()) return;
+
+    const papers: PaperHit[] = [];
+    for (const hit of hits) {
+      const paper = resolved.get(hit.key);
+      if (paper) papers.push({ line: hit.line, paper });
+    }
+    const headings = this.app.metadataCache.getFileCache(file)?.headings || [];
+    view.setPaperList({
+      path: file.path,
+      name: file.basename,
+      root: buildPaperOutline(headings, papers),
+    });
+  }
+
+  /** Item summary for the paper list, fetched once per key and kept in memory. */
+  private async resolveSummary(key: string): Promise<PaperInfo | null> {
+    const cached = this.summaries.get(key);
+    if (cached !== undefined) return cached;
+    const summary = await fetchItemSummary(key);
+    this.summaries.set(key, summary);
+    return summary;
+  }
+
   /** Opens the note a mention lives in, scrolled to its line. */
   private async openMention(mention: Mention): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(mention.path);
@@ -242,10 +312,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
           await this.loadAnnotations(itemKey);
         })();
       } else {
-        const view = this.getView();
-        if (view && !view.isFrozen()) {
-          view.showEmpty();
-        }
+        this.getView()?.showEmpty();
       }
     }, 300);
   }
@@ -256,7 +323,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
    */
   private async loadAnnotations(itemKey: string, force = false): Promise<void> {
     const view = this.getView();
-    if (!view || (view.isFrozen() && !force)) return;
+    if (!view || (view.ignoresCursor() && !force)) return;
 
     if (view.getCurrentItemKey() === itemKey && this.cache.has(itemKey)) {
       return;
@@ -284,7 +351,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
       this.cache.set(itemKey, { info, annotations });
 
-      if (view.getCurrentItemKey() === itemKey || !view.isFrozen()) {
+      if (view.getCurrentItemKey() === itemKey || !view.ignoresCursor()) {
         view.setAnnotations(itemKey, info, annotations, force);
       }
     } catch (e) {

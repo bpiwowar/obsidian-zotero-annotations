@@ -6,8 +6,9 @@ import {
   renderMath,
   finishRenderMath,
 } from "obsidian";
-import { ZoteroAnnotation, ZoteroItemInfo, ZoteroRelatedItem } from "./zotero-client";
+import { ZoteroAnnotation, ZoteroItemInfo, ZoteroItemSummary } from "./zotero-client";
 import { Mention } from "./mention-index";
+import { OutlineSection, countPapers } from "./paper-outline";
 import { readFile, stat } from "fs/promises";
 
 export const VIEW_TYPE_ZOTERO_ANNOTATIONS = "zotero-annotations-view";
@@ -70,8 +71,29 @@ function displayPath(path: string): string {
   return folder ? `${base}  \u00b7  ${folder}` : base;
 }
 
+/** The papers of one note, laid out along its heading structure. */
+export interface PaperList {
+  /** Vault-relative path of the note */
+  path: string;
+  /** Note name, for the header */
+  name: string;
+  /** Root of the heading tree; its own papers are the ones before any heading */
+  root: OutlineSection;
+}
+
+/**
+ * A place the Back button can return to: either an item whose annotations get
+ * re-loaded, or the paper list of a note, which is kept as-is.
+ */
+type HistoryEntry =
+  | { kind: "item"; title: string; key: string }
+  | { kind: "papers"; title: string; list: PaperList };
+
 export class AnnotationView extends ItemView {
   private frozen = false;
+  /** "papers" while the note's paper list is on screen instead of an item */
+  private mode: "item" | "papers" = "item";
+  private paperList: PaperList | null = null;
   private currentItemKey: string | null = null;
   private itemInfo: ZoteroItemInfo | null = null;
   private annotations: ZoteroAnnotation[] = [];
@@ -79,8 +101,8 @@ export class AnnotationView extends ItemView {
   private renderToken = 0;
   /** Elements of the Mentions section of the current render, for in-place refresh */
   private mentionEls: { content: HTMLElement; label: HTMLElement; itemKey: string } | null = null;
-  /** Items visited by following Related links, oldest first */
-  private history: Array<{ key: string; title: string }> = [];
+  /** Views visited by following Related/paper links, oldest first */
+  private history: HistoryEntry[] = [];
   /** Opens a URL in the OS, bypassing any window.open intercepts */
   openExternal: (url: string) => void = (url) => window.open(url);
   /** Loads another item into this view (used by the Related section) */
@@ -89,6 +111,8 @@ export class AnnotationView extends ItemView {
   mentionProvider: ((itemKey: string) => Promise<Mention[]>) | null = null;
   /** Opens a vault note at the line of a mention */
   openMention: (mention: Mention) => void = () => undefined;
+  /** Builds the paper list of the note currently being edited */
+  onListPapers: () => void = () => undefined;
   /** Path to the Zotero data directory */
   zoteroDataDir = "";
 
@@ -112,6 +136,15 @@ export class AnnotationView extends ItemView {
     return this.frozen;
   }
 
+  /** True when the view must not follow the cursor: pinned, or showing a paper list. */
+  ignoresCursor(): boolean {
+    return this.frozen || this.mode === "papers";
+  }
+
+  isShowingPapers(): boolean {
+    return this.mode === "papers";
+  }
+
   getCurrentItemKey(): string | null {
     return this.currentItemKey;
   }
@@ -121,20 +154,45 @@ export class AnnotationView extends ItemView {
     void this.render();
   }
 
-  /** Follows a Related link, remembering the current item so Back can return to it. */
+  /** Follows a Related/paper link, remembering the current view so Back returns to it. */
   private navigateTo(itemKey: string): void {
-    if (this.currentItemKey) {
-      this.history.push({
+    const current = this.snapshot();
+    if (current) this.history.push(current);
+    this.onNavigate(itemKey);
+  }
+
+  /** The current view as a history entry, or null if there is nothing to return to. */
+  private snapshot(): HistoryEntry | null {
+    if (this.mode === "papers" && this.paperList) {
+      return { kind: "papers", title: this.paperList.name, list: this.paperList };
+    }
+    if (this.mode === "item" && this.currentItemKey) {
+      return {
+        kind: "item",
         key: this.currentItemKey,
         title: this.itemInfo?.title || this.currentItemKey,
-      });
+      };
     }
-    this.onNavigate(itemKey);
+    return null;
   }
 
   private goBack(): void {
     const previous = this.history.pop();
-    if (previous) this.onNavigate(previous.key);
+    if (!previous) return;
+    if (previous.kind === "papers") {
+      this.setPaperList(previous.list);
+    } else {
+      this.mode = "item";
+      this.onNavigate(previous.key);
+    }
+  }
+
+  /**
+   * True when an unforced (cursor-driven) update must be ignored: either the
+   * sidebar is pinned, or the paper list is on screen.
+   */
+  private holds(force: boolean): boolean {
+    return !force && this.ignoresCursor();
   }
 
   /**
@@ -151,7 +209,8 @@ export class AnnotationView extends ItemView {
     annotations: ZoteroAnnotation[],
     force = false
   ): void {
-    if (this.frozen && !force) return;
+    if (this.holds(force)) return;
+    this.mode = "item";
     this.resetHistoryIfNeeded(itemKey, force);
     this.currentItemKey = itemKey;
     this.itemInfo = itemInfo;
@@ -160,7 +219,8 @@ export class AnnotationView extends ItemView {
   }
 
   showLoading(itemKey: string, force = false): void {
-    if (this.frozen && !force) return;
+    if (this.holds(force)) return;
+    this.mode = "item";
     this.resetHistoryIfNeeded(itemKey, force);
     this.currentItemKey = itemKey;
     this.itemInfo = null;
@@ -175,7 +235,8 @@ export class AnnotationView extends ItemView {
   }
 
   showEmpty(): void {
-    if (this.frozen) return;
+    if (this.holds(false)) return;
+    this.mode = "item";
     this.history = [];
     this.currentItemKey = null;
     this.itemInfo = null;
@@ -190,7 +251,8 @@ export class AnnotationView extends ItemView {
   }
 
   showError(message: string, force = false): void {
-    if (this.frozen && !force) return;
+    if (this.holds(force)) return;
+    this.mode = "item";
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     this.renderToolbar(container);
@@ -198,6 +260,37 @@ export class AnnotationView extends ItemView {
       cls: "zotero-annot-error",
       text: message,
     });
+  }
+
+  /** Shows the papers of a note, grouped by its headings. */
+  setPaperList(list: PaperList): void {
+    this.mode = "papers";
+    this.paperList = list;
+    void this.render();
+  }
+
+  /** Placeholder shown while the papers of `name` are being resolved in Zotero. */
+  showPaperListLoading(name: string): void {
+    this.mode = "papers";
+    this.paperList = null;
+    const container = this.containerEl.children[1] as HTMLElement;
+    container.empty();
+    this.renderToken++;
+    this.mentionEls = null;
+    this.renderToolbar(container);
+    container.createDiv({
+      cls: "zotero-annot-loading",
+      text: `Looking up the papers of "${name}"\u2026`,
+    });
+  }
+
+  /** Leaves the paper list and goes back to following the cursor. */
+  private closePaperList(): void {
+    this.mode = "item";
+    this.paperList = null;
+    this.history = [];
+    if (this.currentItemKey) void this.render();
+    else this.showEmpty();
   }
 
   async onOpen(): Promise<void> {
@@ -233,7 +326,23 @@ export class AnnotationView extends ItemView {
     });
     freezeBtn.addEventListener("click", () => this.toggleFreeze());
 
-    if (this.currentItemKey) {
+    const papersBtn = toolbar.createEl("button", {
+      cls: `zotero-annot-papers-btn ${this.mode === "papers" ? "is-active" : ""}`,
+      attr: {
+        "aria-label":
+          this.mode === "papers"
+            ? "Back to the annotations of the item under the cursor"
+            : "List the papers cited in the current note",
+      },
+    });
+    setIcon(papersBtn, "list");
+    papersBtn.createSpan({ text: " Papers", cls: "zotero-annot-papers-label" });
+    papersBtn.addEventListener("click", () => {
+      if (this.mode === "papers") this.closePaperList();
+      else this.onListPapers();
+    });
+
+    if (this.mode === "item" && this.currentItemKey) {
       const linkBtn = toolbar.createSpan({
         cls: "zotero-annot-open-link",
         text: "Open in Zotero",
@@ -272,7 +381,7 @@ export class AnnotationView extends ItemView {
     return { content, label: labelEl };
   }
 
-  private renderRelated(parent: HTMLElement, related: ZoteroRelatedItem[]): void {
+  private renderRelated(parent: HTMLElement, related: ZoteroItemSummary[]): void {
     const { content } = this.createSection(
       parent,
       `Related (${related.length})`,
@@ -403,6 +512,78 @@ export class AnnotationView extends ItemView {
     }
   }
 
+  /**
+   * The papers of a note, following its heading structure: each section shows
+   * the papers cited under it, then its sub-sections.
+   */
+  private renderPaperList(container: HTMLElement, list: PaperList): void {
+    const header = container.createDiv({ cls: "zotero-annot-header" });
+    header.createDiv({ cls: "zotero-annot-title", text: `Papers in "${list.name}"` });
+    const total = countPapers(list.root);
+    header.createDiv({
+      cls: "zotero-annot-creators",
+      text: total === 0 ? "No Zotero link in this note" : `${total} paper${total > 1 ? "s" : ""}`,
+    });
+
+    if (total === 0) return;
+    const outline = container.createDiv({ cls: "zotero-annot-paper-outline" });
+    this.renderOutlineSection(outline, list, list.root);
+  }
+
+  private renderOutlineSection(parent: HTMLElement, list: PaperList, section: OutlineSection): void {
+    let body = parent;
+    if (section.heading !== null) {
+      const headingEl = parent.createDiv({
+        cls: `zotero-annot-paper-heading zotero-annot-paper-heading-h${section.level}`,
+        attr: { "aria-label": "Go to this heading" },
+      });
+      headingEl.createSpan({ cls: "zotero-annot-paper-hash", text: "#".repeat(section.level) });
+      headingEl.createSpan({ text: section.heading });
+      headingEl.addEventListener("click", () =>
+        this.openMention({ path: list.path, line: section.line, text: section.heading || "" })
+      );
+      body = parent.createDiv({ cls: "zotero-annot-paper-group" });
+    }
+
+    for (const { paper, lines } of section.papers) {
+      const row = body.createDiv({
+        cls: "zotero-annot-paper-item",
+        attr: { "aria-label": "Show annotations for this paper" },
+      });
+      const main = row.createDiv({ cls: "zotero-annot-paper-main" });
+      main.createDiv({ cls: "zotero-annot-paper-title", text: paper.title });
+      const meta = [paper.creators, paper.year].filter(Boolean).join(" \u00b7 ");
+      if (meta) main.createDiv({ cls: "zotero-annot-paper-meta", text: meta });
+
+      const linesEl = main.createDiv({ cls: "zotero-annot-paper-lines" });
+      for (const line of lines) {
+        const lineEl = linesEl.createSpan({
+          cls: "zotero-annot-paper-line",
+          text: `l. ${line + 1}`,
+          attr: { "aria-label": `Go to line ${line + 1}` },
+        });
+        lineEl.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          this.openMention({ path: list.path, line, text: "" });
+        });
+      }
+
+      row.addEventListener("click", () => this.navigateTo(paper.key));
+
+      const openBtn = row.createSpan({
+        cls: "zotero-annot-paper-open",
+        attr: { "aria-label": "Open in Zotero" },
+      });
+      setIcon(openBtn, "external-link");
+      openBtn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        this.openExternal(`zotero://select/library/items/${paper.key}`);
+      });
+    }
+
+    for (const child of section.children) this.renderOutlineSection(body, list, child);
+  }
+
   private async render(): Promise<void> {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
@@ -410,6 +591,11 @@ export class AnnotationView extends ItemView {
     this.mentionEls = null;
 
     this.renderToolbar(container);
+
+    if (this.mode === "papers") {
+      if (this.paperList) this.renderPaperList(container, this.paperList);
+      return;
+    }
 
     if (this.itemInfo || this.currentItemKey) {
       const header = container.createDiv({ cls: "zotero-annot-header" });

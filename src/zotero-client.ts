@@ -37,7 +37,7 @@ export interface ZoteroItemInfo {
   abstractNote: string;
   notes: ZoteroNote[];
   /** Items linked through Zotero's "Related" field */
-  related: ZoteroRelatedItem[];
+  related: ZoteroItemSummary[];
 }
 
 export interface ZoteroNote {
@@ -45,7 +45,8 @@ export interface ZoteroNote {
   html: string;
 }
 
-export interface ZoteroRelatedItem {
+/** Just enough of an item to list it: no children, no relations. */
+export interface ZoteroItemSummary {
   key: string;
   title: string;
   /** Short form, e.g. "Doe et al." */
@@ -102,32 +103,40 @@ function extractRelatedKeys(relations: unknown): string[] {
 /** Child item types that are never interesting as a "related paper" */
 const NON_PAPER_TYPES = new Set(["attachment", "note", "annotation"]);
 
-async function fetchRelatedItems(keys: string[]): Promise<ZoteroRelatedItem[]> {
-  const results = await Promise.all(
-    keys.map(async (key): Promise<ZoteroRelatedItem | null> => {
-      try {
-        const item = (await zoteroFetch(`${ZOTERO_BASE}/items/${key}`)) as ZoteroApiItem;
-        const d = item.data;
-        const itemType = (d.itemType as string) || "";
-        if (NON_PAPER_TYPES.has(itemType)) return null;
-        const date = (d.date as string) || "";
-        const year = /\b(\d{4})\b/.exec(date)?.[1] || "";
-        return {
-          key: item.key,
-          title: (d.title as string) || "(untitled)",
-          creators: shortCreators(d),
-          year,
-          itemType,
-        };
-      } catch (e) {
-        console.error(`Zotero Annotations: failed to fetch related item ${key}`, e);
-        return null;
-      }
-    })
-  );
+/**
+ * Fetch an item's title/creators/year with a single request.
+ *
+ * Keys taken from `zotero://open-pdf` links point at an attachment rather than
+ * the paper, so an attachment is resolved to its parent item.
+ */
+export async function fetchItemSummary(key: string): Promise<ZoteroItemSummary | null> {
+  try {
+    const item = (await zoteroFetch(`${ZOTERO_BASE}/items/${key}`)) as ZoteroApiItem;
+    const d = item.data;
+    const itemType = (d.itemType as string) || "";
+    if (itemType === "attachment" && typeof d.parentItem === "string") {
+      return await fetchItemSummary(d.parentItem);
+    }
+    if (NON_PAPER_TYPES.has(itemType)) return null;
+    const date = (d.date as string) || "";
+    return {
+      key: item.key,
+      title: (d.title as string) || "(untitled)",
+      creators: shortCreators(d),
+      year: /\b(\d{4})\b/.exec(date)?.[1] || "",
+      itemType,
+    };
+  } catch (e) {
+    console.error(`Zotero Annotations: failed to fetch item ${key}`, e);
+    return null;
+  }
+}
+
+async function fetchRelatedItems(keys: string[]): Promise<ZoteroItemSummary[]> {
+  const results = await Promise.all(keys.map((key) => fetchItemSummary(key)));
 
   return results
-    .filter((r): r is ZoteroRelatedItem => r !== null)
+    .filter((r): r is ZoteroItemSummary => r !== null)
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 

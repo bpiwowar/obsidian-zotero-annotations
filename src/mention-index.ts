@@ -31,7 +31,7 @@ const RESCAN_DEBOUNCE_MS = 500;
 const SAVE_DEBOUNCE_MS = 2000;
 
 /** A zotero:// link found on one line of one note */
-interface Hit {
+export interface Hit {
   key: string;
   line: number;
   text: string;
@@ -83,6 +83,24 @@ export class MentionIndex {
   async getMentions(itemKey: string): Promise<Mention[]> {
     await this.ensureBuilt();
     return this.byKey.get(itemKey.toUpperCase()) || [];
+  }
+
+  /**
+   * Every zotero:// link found in one note, in document order.
+   *
+   * Unlike {@link getMentions} this never triggers the vault-wide scan: a single
+   * note is cheap to read, and the cached entry is used only when still valid.
+   */
+  async getHitsInFile(file: TFile): Promise<Hit[]> {
+    const cached = this.entries.get(file.path);
+    if (cached && cached.mtime === file.stat.mtime) return cached.hits;
+    try {
+      const content = await this.app.vault.cachedRead(file);
+      return content.includes("zotero://") ? collectHits(content) : [];
+    } catch (e) {
+      console.error(`Zotero Annotations: failed to read ${file.path}`, e);
+      return [];
+    }
   }
 
   /** Drops the index (memory and disk) and re-scans the whole vault. */
