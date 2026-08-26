@@ -12,6 +12,7 @@ src/
   zotero-client.ts     # HTTP client for Zotero local API (localhost:23119)
   annotation-view.ts   # Sidebar ItemView — renders annotations, freeze/pin toggle
   cursor-detector.ts   # CodeMirror 6 ViewPlugin — detects cursor on zotero:// links
+  mention-index.ts     # Vault-wide index of notes linking to a Zotero item (cached on disk)
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
 esbuild.config.mjs     # Build script (esbuild)
@@ -46,6 +47,20 @@ Output: `main.js` in project root.
    - `GET /api/users/0/items/{attachmentKey}/children` → get annotation child items
 4. **Rendering** (`annotation-view.ts`): Sidebar shows paper metadata, annotations grouped by page, each with highlighted text, comment, tags, and a clickable link to open the PDF at that page.
 5. **Caching** (`main.ts`): In-memory `Map<itemKey, {info, annotations}>`. Cleared per-item via the "Refresh" command.
+
+### Mentions ("Mentioned in" section)
+
+`mention-index.ts` keeps a `Map<itemKey, Mention[]>` of every vault note containing a
+`zotero://select|open-pdf/(library|groups/N)/items/KEY` URI, one entry per (key, line).
+The sidebar shows them in a foldable section, grouped by note; clicking a line opens the
+note at that line (`leaf.openFile(file, { eState: { line } })`).
+
+Caching, since scanning a whole vault is the expensive part:
+
+- The scan is **lazy** — it runs on the first lookup, not on plugin load — and its result stays in memory for the session.
+- Vault `create`/`modify`/`delete`/`rename` events re-scan only the affected note (500 ms debounce), then notify the sidebar so an open section refreshes itself. Events before the first build are ignored (the lazy build reads current state anyway), which also makes Obsidian's startup burst of `create` events free.
+- The index is mirrored to `<plugin dir>/mention-index.json` (per-file mtime + hits, `CACHE_VERSION`-stamped, debounced write). On restart, only notes whose mtime changed are re-read; notes without any Zotero link are still recorded, since their mtime is what lets them be skipped.
+- "Rescan vault for Zotero mentions" command forces a full rebuild.
 
 ### Freeze/Pin
 

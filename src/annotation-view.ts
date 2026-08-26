@@ -7,6 +7,7 @@ import {
   finishRenderMath,
 } from "obsidian";
 import { ZoteroAnnotation, ZoteroItemInfo, ZoteroRelatedItem } from "./zotero-client";
+import { Mention } from "./mention-index";
 import { readFile, stat } from "fs/promises";
 
 export const VIEW_TYPE_ZOTERO_ANNOTATIONS = "zotero-annotations-view";
@@ -61,17 +62,33 @@ function renderMathInElement(root: HTMLElement): boolean {
   return true;
 }
 
+/** "folder/sub/Note.md" -> "Note (folder/sub)" */
+function displayPath(path: string): string {
+  const name = path.split("/").pop() || path;
+  const base = name.replace(/\.md$/i, "");
+  const folder = path.slice(0, path.length - name.length).replace(/\/$/, "");
+  return folder ? `${base}  \u00b7  ${folder}` : base;
+}
+
 export class AnnotationView extends ItemView {
   private frozen = false;
   private currentItemKey: string | null = null;
   private itemInfo: ZoteroItemInfo | null = null;
   private annotations: ZoteroAnnotation[] = [];
+  /** Incremented on every render, so async section fills can detect being stale */
+  private renderToken = 0;
+  /** Elements of the Mentions section of the current render, for in-place refresh */
+  private mentionEls: { content: HTMLElement; label: HTMLElement; itemKey: string } | null = null;
   /** Items visited by following Related links, oldest first */
   private history: Array<{ key: string; title: string }> = [];
   /** Opens a URL in the OS, bypassing any window.open intercepts */
   openExternal: (url: string) => void = (url) => window.open(url);
   /** Loads another item into this view (used by the Related section) */
   onNavigate: (itemKey: string) => void = () => undefined;
+  /** Looks up the vault notes linking to an item (used by the Mentions section) */
+  mentionProvider: ((itemKey: string) => Promise<Mention[]>) | null = null;
+  /** Opens a vault note at the line of a mention */
+  openMention: (mention: Mention) => void = () => undefined;
   /** Path to the Zotero data directory */
   zoteroDataDir = "";
 
@@ -228,18 +245,22 @@ export class AnnotationView extends ItemView {
     }
   }
 
-  /** Creates a labelled toggle + content div; returns the content div to fill in. */
+  /**
+   * Creates a labelled toggle + content div.
+   * Returns the content div to fill in, and the label span (so sections whose
+   * count is only known asynchronously can update their title).
+   */
   private createSection(
     parent: HTMLElement,
     label: string,
     contentCls: string,
     expanded: boolean
-  ): HTMLElement {
+  ): { content: HTMLElement; label: HTMLElement } {
     const wrapper = parent.createDiv({ cls: "zotero-annot-section" });
     const toggleBtn = wrapper.createEl("button", { cls: "zotero-annot-section-toggle" });
     const iconEl = toggleBtn.createSpan({ cls: "zotero-annot-section-icon" });
     setIcon(iconEl, expanded ? "chevron-down" : "chevron-right");
-    toggleBtn.createSpan({ cls: "zotero-annot-section-label", text: label });
+    const labelEl = toggleBtn.createSpan({ cls: "zotero-annot-section-label", text: label });
     const content = wrapper.createDiv({ cls: contentCls });
     content.toggleClass("is-collapsed", !expanded);
     toggleBtn.addEventListener("click", () => {
@@ -248,11 +269,11 @@ export class AnnotationView extends ItemView {
       iconEl.empty();
       setIcon(iconEl, collapsed ? "chevron-down" : "chevron-right");
     });
-    return content;
+    return { content, label: labelEl };
   }
 
   private renderRelated(parent: HTMLElement, related: ZoteroRelatedItem[]): void {
-    const content = this.createSection(
+    const { content } = this.createSection(
       parent,
       `Related (${related.length})`,
       "zotero-annot-related",
@@ -284,6 +305,80 @@ export class AnnotationView extends ItemView {
     }
   }
 
+  /**
+   * Vault notes linking to this item. The list comes from an index that may
+   * still be building, so the section renders a placeholder and fills in later.
+   */
+  private renderMentions(parent: HTMLElement, itemKey: string): void {
+    const { content, label } = this.createSection(
+      parent,
+      "Mentioned in\u2026",
+      "zotero-annot-mentions",
+      false
+    );
+    this.mentionEls = { content, label, itemKey };
+    void this.fillMentions(content, label, itemKey, this.renderToken);
+  }
+
+  /** Re-reads the mention index for the item on screen (used when the vault changes). */
+  refreshMentions(): void {
+    const els = this.mentionEls;
+    if (!els) return;
+    void this.fillMentions(els.content, els.label, els.itemKey, this.renderToken);
+  }
+
+  private async fillMentions(
+    content: HTMLElement,
+    label: HTMLElement,
+    itemKey: string,
+    token: number
+  ): Promise<void> {
+    const provider = this.mentionProvider;
+    if (!provider) return;
+
+    if (content.childElementCount === 0) {
+      content.createDiv({ cls: "zotero-annot-mentions-loading", text: "Searching vault\u2026" });
+    }
+
+    const mentions = await provider(itemKey);
+    // The view may have moved on to another item while the index was building
+    if (token !== this.renderToken) return;
+
+    content.empty();
+    label.setText(`Mentioned in (${mentions.length})`);
+
+    if (mentions.length === 0) {
+      content.createDiv({
+        cls: "zotero-annot-mentions-empty",
+        text: "No note in this vault links to this item.",
+      });
+      return;
+    }
+
+    let currentPath: string | null = null;
+    let group: HTMLElement | null = null;
+    for (const mention of mentions) {
+      if (mention.path !== currentPath) {
+        currentPath = mention.path;
+        group = content.createDiv({ cls: "zotero-annot-mention-file" });
+        const pathEl = group.createDiv({
+          cls: "zotero-annot-mention-path",
+          text: displayPath(mention.path),
+          attr: { "aria-label": mention.path },
+        });
+        const first = mention;
+        pathEl.addEventListener("click", () => this.openMention(first));
+      }
+      const row = (group as HTMLElement).createDiv({
+        cls: "zotero-annot-mention-line",
+        attr: { "aria-label": `Line ${mention.line + 1}` },
+      });
+      row.createSpan({ cls: "zotero-annot-mention-lineno", text: `${mention.line + 1}` });
+      row.createSpan({ cls: "zotero-annot-mention-text", text: mention.text });
+      row.addEventListener("click", () => this.openMention(mention));
+    }
+  }
+
   private getAnnotationImagePath(annotationKey: string): string {
     return `${this.zoteroDataDir}/cache/library/${annotationKey}.png`;
   }
@@ -311,57 +406,68 @@ export class AnnotationView extends ItemView {
   private async render(): Promise<void> {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
+    this.renderToken++;
+    this.mentionEls = null;
 
     this.renderToolbar(container);
 
-    if (this.itemInfo) {
+    if (this.itemInfo || this.currentItemKey) {
       const header = container.createDiv({ cls: "zotero-annot-header" });
-      header.createDiv({ cls: "zotero-annot-title", text: this.itemInfo.title });
-      if (this.itemInfo.creators) {
-        header.createDiv({
-          cls: "zotero-annot-creators",
-          text: this.itemInfo.creators,
-        });
-      }
-      if (this.itemInfo.date) {
-        header.createSpan({
-          cls: "zotero-annot-date",
-          text: this.itemInfo.date,
-        });
-      }
-
-      // Abstract with toggle (collapsed by default)
-      if (this.itemInfo.abstractNote) {
-        const abstractText = this.createSection(
-          header,
-          "Abstract",
-          "zotero-annot-abstract",
-          false
-        );
-        abstractText.setText(this.itemInfo.abstractNote);
-      }
-
-      // Related items with toggle (collapsed by default)
-      if (this.itemInfo.related.length > 0) {
-        this.renderRelated(header, this.itemInfo.related);
-      }
-
-      // Notes with toggle (expanded by default)
-      if (this.itemInfo.notes.length > 0) {
-        const notesContent = this.createSection(
-          header,
-          `Notes (${this.itemInfo.notes.length})`,
-          "zotero-annot-notes",
-          true
-        );
-        let anyMath = false;
-        for (const note of this.itemInfo.notes) {
-          const noteEl = notesContent.createDiv({ cls: "zotero-annot-note" });
-          noteEl.appendChild(sanitizeHTMLToDom(note.html));
-          await this.resolveNoteImages(noteEl);
-          if (renderMathInElement(noteEl)) anyMath = true;
+      if (this.itemInfo) {
+        header.createDiv({ cls: "zotero-annot-title", text: this.itemInfo.title });
+        if (this.itemInfo.creators) {
+          header.createDiv({
+            cls: "zotero-annot-creators",
+            text: this.itemInfo.creators,
+          });
         }
-        if (anyMath) await finishRenderMath();
+        if (this.itemInfo.date) {
+          header.createSpan({
+            cls: "zotero-annot-date",
+            text: this.itemInfo.date,
+          });
+        }
+
+        // Abstract with toggle (collapsed by default)
+        if (this.itemInfo.abstractNote) {
+          const { content: abstractText } = this.createSection(
+            header,
+            "Abstract",
+            "zotero-annot-abstract",
+            false
+          );
+          abstractText.setText(this.itemInfo.abstractNote);
+        }
+      }
+
+      // Vault locations linking to this item
+      if (this.currentItemKey) {
+        this.renderMentions(header, this.currentItemKey);
+      }
+
+      if (this.itemInfo) {
+        // Related items with toggle (collapsed by default)
+        if (this.itemInfo.related.length > 0) {
+          this.renderRelated(header, this.itemInfo.related);
+        }
+
+        // Notes with toggle (expanded by default)
+        if (this.itemInfo.notes.length > 0) {
+          const { content: notesContent } = this.createSection(
+            header,
+            `Notes (${this.itemInfo.notes.length})`,
+            "zotero-annot-notes",
+            true
+          );
+          let anyMath = false;
+          for (const note of this.itemInfo.notes) {
+            const noteEl = notesContent.createDiv({ cls: "zotero-annot-note" });
+            noteEl.appendChild(sanitizeHTMLToDom(note.html));
+            await this.resolveNoteImages(noteEl);
+            if (renderMathInElement(noteEl)) anyMath = true;
+          }
+          if (anyMath) await finishRenderMath();
+        }
       }
     }
 

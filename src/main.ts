@@ -1,7 +1,8 @@
-import { Plugin, PluginSettingTab, Setting, App } from "obsidian";
+import { Plugin, PluginSettingTab, Setting, App, TAbstractFile, TFile } from "obsidian";
 import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
 import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
 import { fetchAnnotations, fetchItemInfo, isZoteroRunning } from "./zotero-client";
+import { Mention, MentionIndex } from "./mention-index";
 import { homedir } from "os";
 
 interface ZoteroAnnotationsSettings {
@@ -24,10 +25,19 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     string,
     { info: Awaited<ReturnType<typeof fetchItemInfo>>; annotations: Awaited<ReturnType<typeof fetchAnnotations>> }
   >();
+  private mentions!: MentionIndex;
 
   async onload(): Promise<void> {
     await this.loadSettings();
     this.addSettingTab(new ZoteroAnnotationsSettingTab(this.app, this));
+
+    // Index of vault notes linking to Zotero items. The vault scan is lazy
+    // (first lookup) and cached on disk, so it costs little on startup.
+    this.mentions = new MentionIndex(
+      this.app,
+      this.manifest.dir ? `${this.manifest.dir}/mention-index.json` : null
+    );
+    this.registerMentionIndexEvents();
 
     // Save original window.open and patch it to intercept zotero://select/ links.
     // A single click opens the sidebar (after a short delay to detect double-clicks);
@@ -84,6 +94,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       view.zoteroDataDir = this.settings.zoteroDataDir;
       view.openExternal = openInZotero;
       view.onNavigate = (itemKey) => void this.loadAnnotations(itemKey, true);
+      view.mentionProvider = (itemKey) => this.mentions.getMentions(itemKey);
+      view.openMention = (mention) => void this.openMention(mention);
       return view;
     });
 
@@ -107,6 +119,14 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       callback: () => {
         const view = this.getView();
         if (view) view.toggleFreeze();
+      },
+    });
+
+    this.addCommand({
+      id: "rescan-mentions",
+      name: "Rescan vault for Zotero mentions",
+      callback: () => {
+        void this.mentions.rebuild();
       },
     });
 
@@ -139,6 +159,54 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       window.open = this.originalWindowOpen;
       this.originalWindowOpen = null;
     }
+    this.mentions.unload();
+  }
+
+  /**
+   * Keeps the mention index in sync with the vault, and the sidebar in sync
+   * with the index.
+   */
+  private registerMentionIndexEvents(): void {
+    const asMarkdown = (file: TAbstractFile): TFile | null =>
+      file instanceof TFile && file.extension === "md" ? file : null;
+
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        const md = asMarkdown(file);
+        if (md) this.mentions.onFileChanged(md);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        const md = asMarkdown(file);
+        if (md) this.mentions.onFileChanged(md);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        this.mentions.onFileDeleted(file.path);
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof TFile) this.mentions.onFileRenamed(file, oldPath);
+        else this.mentions.onFileDeleted(oldPath);
+      })
+    );
+
+    this.register(
+      this.mentions.onChange(() => {
+        this.getView()?.refreshMentions();
+      })
+    );
+  }
+
+  /** Opens the note a mention lives in, scrolled to its line. */
+  private async openMention(mention: Mention): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(mention.path);
+    if (!(file instanceof TFile)) return;
+    const leaf = this.app.workspace.getMostRecentLeaf() || this.app.workspace.getLeaf(true);
+    await leaf.openFile(file, { eState: { line: mention.line } });
   }
 
   async loadSettings(): Promise<void> {
