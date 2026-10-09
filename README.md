@@ -2,6 +2,10 @@
 
 An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar when your cursor is on a `zotero://select/library/items/ITEMKEY` link.
 
+![The cursor on a Zotero link in a note: the sidebar shows the paper, its abstract, the notes mentioning it and its Zotero notes](screenshots/zotero-link.png)
+
+![A literature note (properties linking to Zotero and the PDF, a Zotero note with its quotes and citations) next to the sidebar showing the paper and its annotations, grouped by page](screenshots/literature-note.png)
+
 ## Features
 
 - **Automatic sidebar**: Place your cursor on a Zotero link (or inside a markdown link `[text](zotero://...)`) and the sidebar opens with that paper's annotations
