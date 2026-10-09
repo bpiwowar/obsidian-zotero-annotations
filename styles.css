@@ -142,6 +142,10 @@
   position: relative;
 }
 
+.view-content .zotero-annot-card[draggable="true"] {
+  cursor: grab;
+}
+
 .view-content .zotero-annot-card:hover {
   background: var(--background-secondary-alt);
 }

@@ -1,15 +1,34 @@
-import { requestUrl } from "obsidian";
+import { RequestUrlParam, RequestUrlResponse, requestUrl } from "obsidian";
+import type { NoteAnnotation } from "./note-format";
 
-const ZOTERO_BASE = "http://localhost:23119/api/users/0";
+const ZOTERO_API = "http://localhost:23119/api";
+const ZOTERO_BASE = `${ZOTERO_API}/users/0`;
+
+/** Most item keys the API accepts in one `itemKey=` filter */
+const MAX_KEYS_PER_REQUEST = 50;
+
+/**
+ * Every request to Zotero goes through here. Zotero drops requests that look
+ * like they come from a browser (Obsidian's user agent does) unless they
+ * carry `Zotero-Allowed-Request`: without it the connection closes with an
+ * empty response.
+ */
+function zoteroRequest(params: RequestUrlParam): Promise<RequestUrlResponse> {
+  return requestUrl({ ...params, headers: { "Zotero-Allowed-Request": "true", ...params.headers } });
+}
 
 async function zoteroFetch(url: string): Promise<unknown> {
-  const res = await requestUrl({
-    url,
-    headers: {
-      "Zotero-Allowed-Request": "true",
-    },
-  });
+  const res = await zoteroRequest({ url });
   return res.json;
+}
+
+/** Case-insensitive response header lookup */
+function header(res: RequestUrlResponse, name: string): string | null {
+  const lower = name.toLowerCase();
+  for (const [k, v] of Object.entries(res.headers)) {
+    if (k.toLowerCase() === lower) return v;
+  }
+  return null;
 }
 
 export interface ZoteroAnnotation {
@@ -19,6 +38,10 @@ export interface ZoteroAnnotation {
   comment: string;
   color: string;
   pageLabel: string;
+  /** Page in the PDF, from 0 (null for EPUBs and snapshots) */
+  pageIndex: number | null;
+  /** `annotationPosition` (page, rectangles…) */
+  position: NoteAnnotation["position"] | null;
   tags: string[];
   /** The attachment key that contains this annotation */
   attachmentKey: string;
@@ -32,6 +55,8 @@ export interface ZoteroItemInfo {
   key: string;
   title: string;
   creators: string;
+  /** Author and year as Zotero cites the item: "Doe et al., 2020" */
+  citation: string;
   date: string;
   itemType: string;
   abstractNote: string;
@@ -56,8 +81,9 @@ export interface ZoteroItemSummary {
   itemType: string;
 }
 
-interface ZoteroApiItem {
+export interface ZoteroApiItem {
   key: string;
+  version: number;
   data: Record<string, unknown>;
 }
 
@@ -87,7 +113,7 @@ function shortCreators(data: Record<string, unknown>): string {
  * are URIs like `http://zotero.org/users/12345/items/ABCD1234` and may be a
  * single string rather than an array.
  */
-function extractRelatedKeys(relations: unknown): string[] {
+export function extractRelatedKeys(relations: unknown): string[] {
   if (!relations || typeof relations !== "object") return [];
   const raw = (relations as Record<string, unknown>)["dc:relation"];
   const uris = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
@@ -159,6 +185,7 @@ export async function fetchItemInfo(itemKey: string): Promise<ZoteroItemInfo | n
       key: item.key,
       title: (d.title as string) || "(untitled)",
       creators,
+      citation: [shortCreators(d), /\b(\d{4})\b/.exec((d.date as string) || "")?.[1]].filter(Boolean).join(", "),
       date: (d.date as string) || "",
       itemType: (d.itemType as string) || "",
       abstractNote: (d.abstractNote as string) || "",
@@ -202,6 +229,13 @@ export async function fetchAnnotations(itemKey: string): Promise<ZoteroAnnotatio
 
         const pageLabel = (a.data.annotationPageLabel as string) || "";
         const pageNum = parseInt(pageLabel, 10);
+        let position: ZoteroAnnotation["position"] = null;
+        try {
+          position = JSON.parse((a.data.annotationPosition as string) || "null") as ZoteroAnnotation["position"];
+        } catch {
+          // no position
+        }
+        const pageIndex = typeof position?.pageIndex === "number" ? position.pageIndex : null;
 
         allAnnotations.push({
           key: a.key,
@@ -210,6 +244,8 @@ export async function fetchAnnotations(itemKey: string): Promise<ZoteroAnnotatio
           comment: (a.data.annotationComment as string) || "",
           color: (a.data.annotationColor as string) || "#ffd400",
           pageLabel,
+          pageIndex,
+          position,
           tags: Array.isArray(a.data.tags)
             ? (a.data.tags as Array<{ tag: string }>).map((t) => t.tag)
             : [],
@@ -241,5 +277,187 @@ export async function isZoteroRunning(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Raw access, versions and writes (Zotero 10+ local API)
+// ---------------------------------------------------------------------------
+
+/**
+ * Identity and state of the Zotero database behind the local API.
+ *
+ * Versions are local to one database (they have nothing to do with web-sync
+ * versions), so anything stored alongside a version must also store the
+ * server ID and be discarded when it changes.
+ */
+export interface LibraryState {
+  serverId: string;
+  /** Incremented once per transaction touching the library */
+  version: number;
+}
+
+export async function fetchLibraryState(): Promise<LibraryState> {
+  const res = await zoteroRequest({ url: `${ZOTERO_BASE}/items?limit=1&format=keys` });
+  return {
+    serverId: header(res, "Zotero-Server-ID") || "",
+    version: parseInt(header(res, "Last-Modified-Version") || "0", 10),
+  };
+}
+
+/**
+ * Keys of the items (of any type: papers, notes, attachments, annotations)
+ * modified after `since`, with the library version they were read at.
+ * Deletions are not reported: the local API has no `/deleted` endpoint.
+ */
+export async function fetchChangedItems(
+  since: number
+): Promise<{ version: number; changed: Record<string, number> }> {
+  const res = await zoteroRequest({ url: `${ZOTERO_BASE}/items?since=${since}&format=versions` });
+  return {
+    version: parseInt(header(res, "Last-Modified-Version") || "0", 10),
+    changed: (res.json as Record<string, number>) || {},
+  };
+}
+
+export async function fetchItem(key: string): Promise<ZoteroApiItem> {
+  return (await zoteroFetch(`${ZOTERO_BASE}/items/${key}`)) as ZoteroApiItem;
+}
+
+export async function fetchChildren(key: string, itemType?: string): Promise<ZoteroApiItem[]> {
+  const filter = itemType ? `?itemType=${itemType}` : "";
+  return (await zoteroFetch(`${ZOTERO_BASE}/items/${key}/children${filter}`)) as ZoteroApiItem[];
+}
+
+/** Fetches many items by key, batching the requests; missing keys are skipped. */
+export async function fetchItems(keys: string[]): Promise<ZoteroApiItem[]> {
+  const result: ZoteroApiItem[] = [];
+  for (let i = 0; i < keys.length; i += MAX_KEYS_PER_REQUEST) {
+    const batch = keys.slice(i, i + MAX_KEYS_PER_REQUEST);
+    const items = (await zoteroFetch(
+      `${ZOTERO_BASE}/items?itemKey=${batch.join(",")}&includeTrashed=1`
+    )) as ZoteroApiItem[];
+    result.push(...items);
+  }
+  return result;
+}
+
+export interface ZoteroCollection {
+  key: string;
+  name: string;
+  parentCollection: string | null;
+}
+
+export async function fetchCollections(): Promise<ZoteroCollection[]> {
+  const raw = (await zoteroFetch(`${ZOTERO_BASE}/collections`)) as ZoteroApiItem[];
+  return raw.map((c) => ({
+    key: c.key,
+    name: (c.data.name as string) || "",
+    parentCollection: typeof c.data.parentCollection === "string" ? c.data.parentCollection : null,
+  }));
+}
+
+/**
+ * Absolute path of an attachment's file (stored or linked), or null when the
+ * attachment has no file on this computer.
+ */
+export async function fetchAttachmentPath(key: string): Promise<string | null> {
+  try {
+    const res = await zoteroRequest({ url: `${ZOTERO_BASE}/items/${key}/file/view/url`, throw: false });
+    if (res.status !== 200 || !res.text.startsWith("file://")) return null;
+    return decodeURIComponent(new URL(res.text.trim()).pathname);
+  } catch {
+    return null;
+  }
+}
+
+/** Raised when a write is rejected because the object changed in Zotero (HTTP 412). */
+export class ZoteroConflictError extends Error {}
+
+/**
+ * Write access to the local API.
+ *
+ * Writes need two headers: `Zotero-Server-ID` (which database we expect) and
+ * `Zotero-API-Key`, obtained through `/local/authorize`, which shows the user
+ * an Allow / Always Allow / Deny dialog in Zotero. Only an "Always Allow" key
+ * is worth keeping; a plain "Allow" key is consumed by the first write.
+ */
+export class ZoteroWriter {
+  constructor(
+    private appName: string,
+    private loadKey: () => string | null,
+    private saveKey: (key: string | null) => Promise<void>
+  ) {}
+
+  /**
+   * Updates fields of an item, failing with {@link ZoteroConflictError} if
+   * it changed in Zotero since `version`.
+   */
+  async patchItem(serverId: string, key: string, version: number, data: Record<string, unknown>): Promise<void> {
+    await this.write(serverId, "PATCH", `/items/${key}`, data, version);
+  }
+
+  /** Creates items, returning their keys in the same order. */
+  async createItems(serverId: string, items: Record<string, unknown>[]): Promise<string[]> {
+    const res = (await this.write(serverId, "POST", "/items", items, null)) as {
+      successful?: Record<string, { key: string }>;
+      failed?: Record<string, { message?: string }>;
+    };
+    return items.map((_, i) => {
+      const ok = res.successful?.[i];
+      if (!ok) throw new Error(res.failed?.[i]?.message || "Zotero refused to create the item");
+      return ok.key;
+    });
+  }
+
+  private async write(
+    serverId: string,
+    method: string,
+    path: string,
+    body: unknown,
+    version: number | null
+  ): Promise<unknown> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const apiKey = this.loadKey() || (await this.authorize(serverId));
+      const headers: Record<string, string> = {
+        "Zotero-Server-ID": serverId,
+        "Zotero-API-Key": apiKey,
+      };
+      if (version !== null) headers["If-Unmodified-Since-Version"] = String(version);
+      const res = await zoteroRequest({
+        url: `${ZOTERO_BASE}${path}`,
+        method,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+        headers,
+        throw: false,
+      });
+      if (res.status === 401) {
+        // Revoked, or a single-use key: ask again once
+        await this.saveKey(null);
+        continue;
+      }
+      if (res.status === 412) throw new ZoteroConflictError(res.text);
+      if (res.status >= 400) throw new Error(`Zotero write failed (${res.status}): ${res.text}`);
+      return res.status === 204 ? null : res.json;
+    }
+    throw new Error("Zotero did not authorize this plugin to write");
+  }
+
+  /** Asks Zotero for a key; resolves once the user has answered the dialog. */
+  private async authorize(serverId: string): Promise<string> {
+    const res = await zoteroRequest({
+      url: `${ZOTERO_API}/local/authorize`,
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify({ appName: this.appName }),
+      headers: { "Zotero-Server-ID": serverId },
+      throw: false,
+    });
+    if (res.status === 403) throw new Error("Write access was denied in Zotero");
+    if (res.status !== 200) throw new Error(`Zotero authorization failed (${res.status}): ${res.text}`);
+    const { key, remember } = res.json as { key: string; remember: boolean };
+    if (remember) await this.saveKey(key);
+    return key;
   }
 }

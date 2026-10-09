@@ -14,6 +14,8 @@ src/
   cursor-detector.ts   # CodeMirror 6 ViewPlugin — detects cursor on zotero:// links
   mention-index.ts     # Vault-wide index of notes linking to a Zotero item (cached on disk)
   paper-outline.ts     # Lays a note's Zotero links out along its heading structure
+  literature-notes.ts  # One synced note per paper: create, update regions, incremental sync
+  note-format.ts       # Literature note text: file names (short title – KEY), header, zt-note regions / single-note layout
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
 esbuild.config.mjs     # Build script (esbuild)
@@ -47,7 +49,7 @@ Output: `main.js` in project root.
    - `GET /api/users/0/items/{itemKey}/children` → find PDF attachments
    - `GET /api/users/0/items/{attachmentKey}/children` → get annotation child items
 4. **Rendering** (`annotation-view.ts`): Sidebar shows paper metadata, annotations grouped by page, each with highlighted text, comment, tags, and a clickable link to open the PDF at that page.
-5. **Caching** (`main.ts`): In-memory `Map<itemKey, {info, annotations}>`. Cleared per-item via the "Refresh" command.
+5. **Caching** (`main.ts`): In-memory `Map<itemKey, {info, annotations, version}>`. A cached paper is shown at once, then checked against Zotero's library version (asked at most every 10 s, `PAPER_CHECK_MS`) and reloaded — literature notes synced along — when the library changed. The periodic check (`syncInterval`, default 5 min) and window focus do the same for the paper on screen.
 
 ### Mentions ("Mentioned in" section)
 
@@ -79,6 +81,34 @@ heading or a line number jumps there in the note; clicking a paper loads its ann
 (the Back button returns to the list). While the list is on screen the view stops
 following the cursor, exactly as when it is pinned (`AnnotationView.ignoresCursor`).
 
+### Literature notes
+
+`literature-notes.ts` keeps one note per paper (frontmatter `zotero-key`, as ZotLit). The header
+(title, Zotero and file links) is written once at creation; annotations are not copied (the
+sidebar shows them and follows the open literature note); each `%%zt-note: KEY%%` region mirrors a Zotero child note (markers only when needed: a body
+that is exactly one Zotero note has none, its key in the `zotero-note` property — `noteLayout`) and is
+refreshed only while its hash matches what was last written (local edits are kept; shift-click
+on the sidebar refresh overwrites them). Quotes and citations become `zotero://` links that carry
+everything needed to rebuild them for write-back (page, label, highlight rects, cited locator). State
+(per-item region versions/hashes, descendant keys, server ID, library version) lives in
+`<plugin dir>/literature-notes.json`. Sync asks `items?since=<libraryVersion>&format=versions`
+and maps changed keys to tracked papers through their descendants (two parent hops for new
+children). The local API never reports deletions (no `/deleted`), and versions are only valid
+for one `Zotero-Server-ID`. Write access (`ZoteroWriter`, Zotero 10+) needs a key from
+`/local/authorize`; embedded-image uploads are refused by Zotero.
+
+### Drag and drop
+
+Annotation cards are draggable: the drop inserts `annotationMarkdown` (note-format.ts), the
+Markdown Zotero's "add to note" would give once converted like literature notes —
+`[“quote”](zotero://open-pdf/…?page=…&annotation=…&rects=…) [(Doe, 2020, p. 3)](zotero://select/…?locator=3) comment`.
+An image annotation also carries `ANNOTATION_DRAG_TYPE` data: main.ts's `editor-drop` handler copies Zotero's
+rendering (`<Zotero>/cache/library/KEY.png`) into the image folder as `KEY.png` (the annotation key, as literature
+notes name them) and inserts `![library/items/ATT?page=…&annotation=KEY…|300](Zotero/images/KEY.png) [(Doe, 2020, p. 3)](…)`:
+the alt text of the image holds the annotation link minus `zotero://open-pdf/` (a full URL shows as a link) (`annotationImage`; literature notes write annotation images
+of Zotero notes the same way, with Zotero's width). The card's `<img>` is `draggable=false` so its
+base64 data URL never drops.
+
 ### Freeze/Pin
 
 The sidebar has a Pin/Auto toggle. When pinned, cursor movements don't update the sidebar — the current annotations stay visible. Toggled via toolbar button or the "Pin/Unpin annotations sidebar" command.
@@ -89,7 +119,7 @@ The sidebar has a Pin/Auto toggle. When pinned, cursor movements don't update th
 - In Zotero 7, annotations are child items of PDF attachment items with `itemType: "annotation"`
 - Annotation fields used: `annotationType`, `annotationText`, `annotationComment`, `annotationColor`, `annotationPageLabel`, `annotationSortIndex`, `tags`
 - Related items live in `data.relations["dc:relation"]` as URIs (`http://zotero.org/users/{userId}/items/{KEY}`); the item key is parsed out of the URI and each related item is fetched individually for its title/creators/year
-- PDF open link: `zotero://open-pdf/library/items/{attachmentKey}?page={pageLabel}`
+- PDF open link: `zotero://open-pdf/library/items/{attachmentKey}?page={pageIndex+1}&annotation={annotationKey}` — Zotero's `page` counts from 1, it is not the page label; unknown query parameters are ignored (literature notes use them to keep quote positions, see `annotationLink`)
 
 ### Obsidian APIs used
 
@@ -102,7 +132,6 @@ The sidebar has a Pin/Auto toggle. When pinned, cursor movements don't update th
 
 - **Watch mode**: `esbuild.config.mjs` doesn't support `--watch` yet — needs switching from `build()` to `context().watch()`
 - **Group libraries**: Only personal library (`users/0`) is supported. Group libraries use `/groups/{groupId}/items/...`
-- **Settings panel**: No settings UI yet. Candidates: custom Zotero port, debounce delay, sidebar auto-open behavior
 - **`requestUrl` vs `fetch`**: Obsidian's `requestUrl` doesn't appear in DevTools Network tab. Consider using `fetch` behind a dev flag for easier debugging
 - **Error recovery**: If Zotero is not running on first cursor hit, user must manually trigger refresh after starting Zotero
 - **No annotation position data**: Page-level granularity only; no scroll-to-exact-position in the PDF viewer

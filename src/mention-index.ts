@@ -85,6 +85,12 @@ export class MentionIndex {
     return this.byKey.get(itemKey.toUpperCase()) || [];
   }
 
+  /** Every item key linked from the vault */
+  async getKeys(): Promise<string[]> {
+    await this.ensureBuilt();
+    return Array.from(this.byKey.keys());
+  }
+
   /**
    * Every zotero:// link found in one note, in document order.
    *

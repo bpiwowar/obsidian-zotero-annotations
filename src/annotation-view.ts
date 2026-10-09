@@ -9,6 +9,7 @@ import {
 import { ZoteroAnnotation, ZoteroItemInfo, ZoteroItemSummary } from "./zotero-client";
 import { Mention } from "./mention-index";
 import { OutlineSection, countPapers } from "./paper-outline";
+import { ANNOTATION_DRAG_TYPE, AnnotationDrag, annotationMarkdown } from "./note-format";
 import { readFile, stat } from "fs/promises";
 
 export const VIEW_TYPE_ZOTERO_ANNOTATIONS = "zotero-annotations-view";
@@ -114,6 +115,16 @@ export class AnnotationView extends ItemView {
   onListPapers: () => void = () => undefined;
   /** Path to the Zotero data directory */
   zoteroDataDir = "";
+  /** Whether literature notes are turned on (shows the toolbar button) */
+  literatureNotesEnabled: () => boolean = () => false;
+  /** True while the note being edited is the literature note of the item (its notes are in it) */
+  isEditingLiteratureNote: (itemKey: string) => boolean = () => false;
+  private notesSection: HTMLElement | null = null;
+  /** Opens (creating it if needed) the literature note of an item */
+  openLiteratureNote: (itemKey: string) => void = () => undefined;
+  /** Re-fetches the item from Zotero (and its literature note, if any) */
+  /** `overwrite`: shift-click, the literature note is replaced by Zotero's version */
+  onRefresh: (itemKey: string, overwrite: boolean) => void = () => undefined;
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -146,6 +157,11 @@ export class AnnotationView extends ItemView {
 
   getCurrentItemKey(): string | null {
     return this.currentItemKey;
+  }
+
+  /** Whether the annotations of this item are on screen */
+  isShowingItem(itemKey: string): boolean {
+    return this.mode === "item" && this.currentItemKey === itemKey;
   }
 
   toggleFreeze(): void {
@@ -341,6 +357,30 @@ export class AnnotationView extends ItemView {
       else this.onListPapers();
     });
 
+    if (this.mode === "item" && this.currentItemKey && this.literatureNotesEnabled()) {
+      const itemKey = this.currentItemKey;
+      const noteBtn = toolbar.createEl("button", {
+        cls: "zotero-annot-litnote-btn",
+        attr: { "aria-label": "Open the literature note of this paper (created if needed)" },
+      });
+      setIcon(noteBtn, "file-text");
+      noteBtn.createSpan({ text: " Note", cls: "zotero-annot-papers-label" });
+      noteBtn.addEventListener("click", () => this.openLiteratureNote(itemKey));
+    }
+
+    if (this.mode === "item" && this.currentItemKey) {
+      const itemKey = this.currentItemKey;
+      const refreshBtn = toolbar.createEl("button", {
+        cls: "zotero-annot-refresh-btn",
+        attr: {
+          "aria-label":
+            "Refresh from Zotero (annotations and literature note); shift-click overwrites the note's edits",
+        },
+      });
+      setIcon(refreshBtn, "refresh-cw");
+      refreshBtn.addEventListener("click", (evt) => this.onRefresh(itemKey, evt.shiftKey));
+    }
+
     if (this.mode === "item" && this.currentItemKey) {
       const linkBtn = toolbar.createSpan({
         cls: "zotero-annot-open-link",
@@ -358,6 +398,12 @@ export class AnnotationView extends ItemView {
    * Returns the content div to fill in, and the label span (so sections whose
    * count is only known asynchronously can update their title).
    */
+  /** Hides the Notes section while the item's literature note is being edited */
+  updateNotesVisibility(): void {
+    if (!this.notesSection?.isConnected || !this.currentItemKey) return;
+    this.notesSection.toggle(!this.isEditingLiteratureNote(this.currentItemKey));
+  }
+
   private createSection(
     parent: HTMLElement,
     label: string,
@@ -644,6 +690,8 @@ export class AnnotationView extends ItemView {
             "zotero-annot-notes",
             true
           );
+          this.notesSection = notesContent.parentElement;
+          this.updateNotesVisibility();
           let anyMath = false;
           for (const note of this.itemInfo.notes) {
             const noteEl = notesContent.createDiv({ cls: "zotero-annot-note" });
@@ -683,7 +731,27 @@ export class AnnotationView extends ItemView {
 
       const card = list.createDiv({
         cls: "zotero-annot-card",
-        attr: { style: `border-left-color: ${annot.color}` },
+        attr: { style: `border-left-color: ${annot.color}`, draggable: "true" },
+      });
+      // Dropped into a note, the annotation becomes a quote linking back to Zotero
+      const itemKey = this.currentItemKey;
+      const citation = this.itemInfo?.citation ?? "";
+      card.addEventListener("dragstart", (evt) => {
+        if (!evt.dataTransfer || !itemKey) return;
+        // Only the Markdown: not the image of the card (a base64 data URL)
+        evt.dataTransfer.clearData();
+        evt.dataTransfer.setData("text/plain", annotationMarkdown(annot, itemKey, citation));
+        if (annot.type === "image") {
+          // The image is copied into the vault on drop (see the plugin's editor-drop handler)
+          const drag: AnnotationDrag = {
+            annotation: annot,
+            parentKey: itemKey,
+            citation,
+            imagePath: this.getAnnotationImagePath(annot.key),
+          };
+          evt.dataTransfer.setData(ANNOTATION_DRAG_TYPE, JSON.stringify(drag));
+        }
+        evt.dataTransfer.effectAllowed = "copy";
       });
 
       if (annot.type !== "highlight") {
@@ -700,7 +768,8 @@ export class AnnotationView extends ItemView {
         if (base64) {
           imgContainer.createEl("img", {
             cls: "zotero-annot-image",
-            attr: { src: `data:image/png;base64,${base64}` },
+            // Dragging takes the whole card (see dragstart), not this data URL
+            attr: { src: `data:image/png;base64,${base64}`, draggable: "false" },
           });
         } else {
           const placeholder = imgContainer.createDiv({ cls: "zotero-annot-image-placeholder" });
@@ -729,8 +798,10 @@ export class AnnotationView extends ItemView {
         text: `p. ${annot.pageLabel || "?"}`,
       });
       openLink.addEventListener("click", () => {
+        // Zotero's `page` counts from 1 (it is not the page label)
+        const page = annot.pageIndex !== null ? `page=${annot.pageIndex + 1}&` : "";
         this.openExternal(
-          `zotero://open-pdf/library/items/${annot.attachmentKey}?page=${annot.pageLabel}`
+          `zotero://open-pdf/library/items/${annot.attachmentKey}?${page}annotation=${annot.key}`
         );
       });
     }
