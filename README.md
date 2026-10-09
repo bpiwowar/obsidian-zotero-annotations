@@ -90,7 +90,8 @@ A Zotero child note, as Markdown
 
 - **Network**: the plugin only talks to Zotero running on your own computer, through its local API (`http://localhost:23119`). Nothing is sent to any remote server, and there is no telemetry.
 - **GitHub**: when a note cannot be converted safely for Zotero, the plugin offers to open a pre-filled GitHub issue in your browser. That issue contains the note's text; it is only submitted if you click "Submit" on GitHub yourself.
-- **Files outside the vault**: Zotero renders image (area) annotations to its cache, `<Zotero data directory>/cache/library/` (the directory is set in the plugin settings, `~/Zotero` by default). The plugin reads them there to show them in the sidebar, and copies them into the vault when you drag one into a note or a literature note includes one. It never writes outside the vault.
+- **Files outside the vault** (read-only, through Node's `fs`): Zotero's local API serves neither the images of area annotations nor the files of images embedded in notes, so the plugin reads them in Zotero's data directory (set in the plugin settings, `~/Zotero` by default): annotation images in `cache/library/`, note images in `storage/` (at the path the API gives). They are shown in the sidebar, and copied into the vault when you drag an annotation into a note or a literature note includes one. The plugin never writes outside the vault.
+- **Vault notes**: to list the notes that mention a paper ("Mentioned in"), the plugin reads the Markdown notes of the vault, looking for `zotero://` links. The index is kept in the plugin's folder (`mention-index.json`) and never leaves your computer.
 
 ## Installation
 
