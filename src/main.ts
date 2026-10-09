@@ -252,11 +252,45 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
       this.addCommand({
         id: "sync-literature-notes",
-        name: "Sync literature notes with Zotero",
+        name: "Sync changed literature notes with Zotero",
         checkCallback: (checking) => {
           if (!this.settings.literatureNotes) return false;
           if (!checking) {
             void this.literature.sync().catch((e: Error) => new Notice(`Could not sync with Zotero: ${e.message}`));
+          }
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "refresh-all-literature-notes",
+        name: "Refresh all literature notes from Zotero",
+        checkCallback: (checking) => {
+          if (!this.settings.literatureNotes) return false;
+          if (!checking) void this.refreshAllLiteratureNotes();
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "push-all-literature-notes",
+        name: "Send all literature note edits to Zotero",
+        checkCallback: (checking) => {
+          if (!this.settings.literatureNotes) return false;
+          if (!checking) void this.pushAllLiteratureNotes();
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "sync-all-literature-notes",
+        name: "Sync all literature notes with Zotero (send edits, then refresh)",
+        checkCallback: (checking) => {
+          if (!this.settings.literatureNotes) return false;
+          if (!checking) {
+            void (async () => {
+              if (await this.pushAllLiteratureNotes()) await this.refreshAllLiteratureNotes();
+            })();
           }
           return true;
         },
@@ -585,6 +619,40 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         })();
       })
     );
+  }
+
+  /** Sends the edits of every literature note to Zotero, asking about conflicts; false when it failed */
+  private async pushAllLiteratureNotes(): Promise<boolean> {
+    try {
+      await this.literature.pushAll(true);
+      return true;
+    } catch (e) {
+      new Notice(`Could not send the edits to Zotero: ${(e as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Refreshes every literature note from Zotero (edited sections are kept), with a progress notice */
+  private async refreshAllLiteratureNotes(): Promise<void> {
+    const notice = new Notice("Refreshing literature notes from Zotero\u2026", 0);
+    try {
+      const { refreshed, failed } = await this.literature.refreshAll((done, total) =>
+        notice.setMessage(`Refreshing literature notes from Zotero\u2026 ${done}/${total}`)
+      );
+      new Notice(
+        `${refreshed} literature note(s) refreshed from Zotero` +
+          (failed > 0 ? `, ${failed} failed (details in the developer console).` : ".")
+      );
+    } catch (e) {
+      new Notice(`Could not refresh from Zotero: ${(e as Error).message}`);
+    } finally {
+      notice.hide();
+    }
+    const key = this.getView()?.getCurrentItemKey();
+    if (key) {
+      this.cache.delete(key);
+      void this.loadAnnotations(key, true);
+    }
   }
 
   /** Sends the edits of a literature note to Zotero; `interactive`: asked by the user (conflicts, errors shown) */

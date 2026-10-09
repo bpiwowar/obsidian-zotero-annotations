@@ -132,7 +132,11 @@ You can also set the `OBSIDIAN_PLUGIN_DIR` environment variable instead of using
 | Refresh current annotations | Clear the cache and re-fetch annotations for the current item |
 | Open literature note of the paper in the sidebar | Opens the paper's literature note, creating it if needed |
 | Refresh literature note from Zotero | Re-reads the active literature note's paper from Zotero |
-| Sync literature notes with Zotero | Updates every literature note whose paper changed in Zotero |
+| Send literature note edits to Zotero | Sends the Zotero notes of the active literature note to Zotero |
+| Sync changed literature notes with Zotero | Updates every literature note whose paper changed in Zotero |
+| Refresh all literature notes from Zotero | Re-reads every literature note from Zotero, changed or not (sections edited in Obsidian are kept); also adds the offline copy to older notes |
+| Send all literature note edits to Zotero | Sends the edited sections of every literature note to Zotero, asking when a note changed on both sides |
+| Sync all literature notes with Zotero | Sends all edits, then refreshes all literature notes |
 
 ## Known limitations
 

@@ -507,13 +507,21 @@ export class LiteratureNotes {
   // Vault → Zotero
   // -------------------------------------------------------------------------
 
-  /** Pushes every tracked literature note (see {@link push}) */
-  async pushAll(): Promise<void> {
+  /**
+   * Pushes the edits of every tracked literature note (see {@link push}).
+   * `interactive` (asked by the user): conflicts and failed conversions are
+   * asked about as for a single note, and a notice tells what was sent.
+   * Returns the number of Zotero notes sent.
+   */
+  async pushAll(interactive = false): Promise<number> {
     await this.loadState();
+    let sent = 0;
     for (const tracked of Object.values(this.state.items)) {
       const file = this.app.vault.getAbstractFileByPath(tracked.path);
-      if (file instanceof TFile) await this.push(file);
+      if (file instanceof TFile) sent += await this.push(file, interactive, { everyRegion: false, notify: false });
     }
+    if (interactive) new Notice(sent > 0 ? `${sent} Zotero note(s) sent.` : "No literature note edits to send to Zotero.");
+    return sent;
   }
 
   /**
@@ -522,20 +530,29 @@ export class LiteratureNotes {
    * without Zotero notes) become Zotero notes. A region removed in Obsidian
    * is not deleted in Zotero. `interactive` (asked by the user) sends every
    * region, edited or not, and asks about regions changed on both sides;
-   * otherwise those are reported once.
+   * otherwise those are reported once. Returns the number of Zotero notes sent.
    */
-  async push(file: TFile, interactive = false): Promise<void> {
+  async push(
+    file: TFile,
+    interactive = false,
+    {
+      /** Send unedited regions too */
+      everyRegion = interactive,
+      /** Tell what was sent */
+      notify = interactive,
+    } = {}
+  ): Promise<number> {
     const itemKey = this.keyOf(file);
-    if (!itemKey) return;
+    if (!itemKey) return 0;
     await this.loadState();
-    const { sent, conflicts, failures } = await this.locked(itemKey, () => this.doPush(itemKey, file, interactive));
+    const { sent, conflicts, failures } = await this.locked(itemKey, () => this.doPush(itemKey, file, everyRegion));
     if (interactive) {
       for (const failure of failures) await this.reportFailure(file, failure);
       for (const conflict of conflicts) await this.resolveConflict(itemKey, file, conflict);
-      if (conflicts.length === 0 && failures.length === 0) {
+      if (notify && conflicts.length === 0 && failures.length === 0) {
         new Notice(sent > 0 ? `${file.basename}: ${sent} note(s) sent to Zotero.` : `${file.basename}: no Zotero note to send.`);
       }
-      return;
+      return sent;
     }
     const unreported = failures.filter((f) => !this.reported.has(`conversion:${hash(f.markdown)}`));
     for (const f of unreported) this.reported.add(`conversion:${hash(f.markdown)}`);
@@ -554,6 +571,7 @@ export class LiteratureNotes {
           'Use "Send literature note edits to Zotero" to choose a version.'
       );
     }
+    return sent;
   }
 
   private async doPush(
@@ -781,21 +799,48 @@ export class LiteratureNotes {
    * last sync (item, notes, attachments or annotations).
    */
   sync(): Promise<void> {
-    if (!this.syncing) {
-      this.syncing = this.doSync().finally(() => {
-        this.syncing = null;
-      });
-    }
+    if (this.syncing) return this.syncing;
+    const run = this.doSync(false).then(() => undefined);
+    this.syncing = run.finally(() => {
+      this.syncing = null;
+    });
     return this.syncing;
   }
 
-  private async doSync(): Promise<void> {
+  /**
+   * Refreshes every tracked literature note from Zotero, changed or not
+   * (edited regions are kept, as by {@link sync}). `onProgress` is called
+   * before each note. Returns how many notes were refreshed and failed.
+   */
+  async refreshAll(onProgress?: (done: number, total: number) => void): Promise<{ refreshed: number; failed: number }> {
+    // After any sync under way, and in its place for the ones asked meanwhile
+    while (this.syncing) await this.syncing.catch(() => undefined);
+    const run = this.doSync(true, onProgress);
+    this.syncing = run.then(
+      () => undefined,
+      () => undefined
+    );
+    try {
+      return await run;
+    } finally {
+      this.syncing = null;
+    }
+  }
+
+  private async doSync(
+    full: boolean,
+    onProgress?: (done: number, total: number) => void
+  ): Promise<{ refreshed: number; failed: number }> {
     await this.loadState();
     const lib = await fetchLibraryState();
     const tracked = Object.keys(this.state.items);
+    const result = { refreshed: 0, failed: 0 };
 
     let affected: Set<string>;
-    if (lib.serverId !== this.state.serverId || this.state.libraryVersion === 0) {
+    if (full) {
+      affected = new Set(tracked);
+      this.state.serverId = lib.serverId;
+    } else if (lib.serverId !== this.state.serverId || this.state.libraryVersion === 0) {
       // Another Zotero database (or first run): versions mean nothing, re-check everything
       affected = new Set(tracked);
       this.state.serverId = lib.serverId;
@@ -803,12 +848,14 @@ export class LiteratureNotes {
         for (const r of Object.values(t.regions)) r.version = 0;
       }
     } else if (lib.version === this.state.libraryVersion) {
-      return;
+      return result;
     } else {
       affected = await this.affectedItems(this.state.libraryVersion);
     }
 
+    let done = 0;
     for (const key of affected) {
+      onProgress?.(done++, affected.size);
       const file = this.findNote(key);
       if (!file) {
         delete this.state.items[key];
@@ -816,12 +863,15 @@ export class LiteratureNotes {
       }
       try {
         await this.locked(key, () => this.refresh(key, file));
+        result.refreshed++;
       } catch (e) {
+        result.failed++;
         console.error(`Zotero Annotations: failed to sync ${file.path}`, e);
       }
     }
     this.state.libraryVersion = lib.version;
     await this.saveState();
+    return result;
   }
 
   /** Tracked items touched by the changes since `since` */

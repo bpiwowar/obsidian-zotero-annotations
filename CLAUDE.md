@@ -110,6 +110,8 @@ and maps changed keys to tracked papers through their descendants (two parent ho
 children). The local API never reports deletions (no `/deleted`), and versions are only valid
 for one `Zotero-Server-ID`. Write access (`ZoteroWriter`, Zotero 10+) needs a key from
 `/local/authorize`; embedded-image uploads are refused by Zotero.
+Bulk commands: "Refresh all" (`refreshAll`, a full `doSync` over every tracked note, edited regions kept),
+"Send all" (`pushAll`, interactive) and "Sync all" (send, then refresh); the incremental sync is "Sync changed".
 
 ### Drag and drop
 
