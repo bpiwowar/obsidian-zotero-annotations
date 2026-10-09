@@ -3,7 +3,8 @@
   "name": "Zotero Annotations",
   "version": "0.2.0",
   "minAppVersion": "1.14.4",
-  "description": "Automatically show Zotero PDF annotations in a sidebar when the cursor is on a zotero:// link.",
-  "author": "Benjamin",
+  "description": "Show the Zotero annotations of the paper under the cursor in a sidebar, and keep literature notes in sync with Zotero notes, in both directions.",
+  "author": "Benjamin Piwowarski",
+  "authorUrl": "https://github.com/bpiwowar",
   "isDesktopOnly": true
 }

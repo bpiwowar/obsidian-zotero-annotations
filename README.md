@@ -17,11 +17,13 @@ An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar 
 - **Pin/freeze**: Pin the sidebar to keep the current annotations while you navigate
 - **PDF links**: Click a page number to open the PDF at that page in Zotero
 - **Caching**: Annotations are cached in memory to avoid repeated API calls
-- **Literature notes** (optional): one note per paper, with its annotations and Zotero notes, kept in sync with Zotero — see below
+- **Literature notes** (optional): one note per paper holding its Zotero notes, kept in sync with Zotero in both directions — see below
+- **Drag and drop**: drag an annotation from the sidebar into a note to quote it with a link back to the PDF
 
 ## Requirements
 
-- **Zotero 7+** running locally (Zotero 10+ for writing notes back to Zotero, in a coming version)
+- Obsidian desktop (the plugin is desktop-only)
+- **Zotero 7+** running locally (Zotero 10+ to send literature note edits back to Zotero)
 - Zotero's local API enabled: **Settings → Advanced → "Allow other applications on this computer to communicate with Zotero"**
 
 ## Getting Zotero links
@@ -80,14 +82,23 @@ A Zotero child note, as Markdown
 - **Your edits are safe**: text outside the `zt-note` sections is never touched (a note holding a single Zotero note has no such text: the whole body is the note). A note or `zt-note` section you edited in Obsidian is not overwritten: it is sent to Zotero (when you leave the note, after 30 s without typing, or with "Send literature note edits to Zotero"; the first time, Zotero asks for permission — choose "Always allow"). If the note changed in Zotero too, you choose which version to keep. A new `%%zt-note%%` section (without key), or the text of a note for a paper without Zotero notes, becomes a new Zotero note. Images go along (PNG and JPEG; Zotero imports them when the note is opened in Zotero). Deleting a `zt-note` section (or emptying a single-note body) keeps it out of the note. Holding exactly one Zotero note and nothing else, a note drops its markers.
 - **Images** inside Zotero notes are copied to the image folder.
 
+## Network use and files outside the vault
+
+- **Network**: the plugin only talks to Zotero running on your own computer, through its local API (`http://localhost:23119`). Nothing is sent to any remote server, and there is no telemetry.
+- **GitHub**: when a note cannot be converted safely for Zotero, the plugin offers to open a pre-filled GitHub issue in your browser. That issue contains the note's text; it is only submitted if you click "Submit" on GitHub yourself.
+- **Files outside the vault**: Zotero renders image (area) annotations to its cache, `<Zotero data directory>/cache/library/` (the directory is set in the plugin settings, `~/Zotero` by default). The plugin reads them there to show them in the sidebar, and copies them into the vault when you drag one into a note or a literature note includes one. It never writes outside the vault.
+
 ## Installation
+
+### From Obsidian
+
+**Settings → Community plugins → Browse**, search for "Zotero Annotations", install and enable it.
 
 ### Manual
 
-1. Download or clone this repository
-2. Run `npm install && npm run build`
-3. Copy `main.js` and `manifest.json` to `<vault>/.obsidian/plugins/zotero-annotations/`
-4. Enable the plugin in Obsidian: **Settings → Community plugins → Zotero Annotations**
+1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/bpiwowar/obsidian-zotero-annotations/releases/latest)
+2. Copy them to `<vault>/.obsidian/plugins/zotero-annotations/`
+3. Enable the plugin in Obsidian: **Settings → Community plugins → Zotero Annotations**
 
 ### Development
 
