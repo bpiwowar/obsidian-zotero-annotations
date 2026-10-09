@@ -116,8 +116,8 @@ export class MentionIndex {
     if (!this.buildPromise) return;
     if (file.extension !== "md") return;
     const existing = this.rescanTimers.get(file.path);
-    if (existing) activeWindow.clearTimeout(existing);
-    const timer = activeWindow.setTimeout(() => {
+    if (existing) window.clearTimeout(existing);
+    const timer = window.setTimeout(() => {
       this.rescanTimers.delete(file.path);
       void this.scanFile(file).then(() => this.commit());
     }, RESCAN_DEBOUNCE_MS);
@@ -140,10 +140,10 @@ export class MentionIndex {
   }
 
   unload(): void {
-    for (const timer of this.rescanTimers.values()) activeWindow.clearTimeout(timer);
+    for (const timer of this.rescanTimers.values()) window.clearTimeout(timer);
     this.rescanTimers.clear();
     if (this.saveTimer !== null) {
-      activeWindow.clearTimeout(this.saveTimer);
+      window.clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     this.listeners.clear();
@@ -208,8 +208,8 @@ export class MentionIndex {
 
   private scheduleSave(): void {
     if (!this.cachePath) return;
-    if (this.saveTimer !== null) activeWindow.clearTimeout(this.saveTimer);
-    this.saveTimer = activeWindow.setTimeout(() => {
+    if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+    this.saveTimer = window.setTimeout(() => {
       this.saveTimer = null;
       void this.saveCache();
     }, SAVE_DEBOUNCE_MS);

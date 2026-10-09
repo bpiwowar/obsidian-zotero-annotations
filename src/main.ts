@@ -1,4 +1,4 @@
-import { Plugin, PluginSettingTab, Setting, App, Notice, TAbstractFile, TFile } from "obsidian";
+import { Plugin, PluginSettingTab, SettingDefinitionItem, App, Notice, TAbstractFile, TFile } from "obsidian";
 import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
 import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
 import { fetchAnnotations, fetchItemInfo, fetchItemSummary, isZoteroRunning } from "./zotero-client";
@@ -58,8 +58,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       const key = extractZoteroKey(url);
       if (key && url.includes("zotero://select/") && !bypassIntercept) {
         const existing = this.pendingClickTimers.get(key);
-        if (existing) activeWindow.clearTimeout(existing);
-        const timer = activeWindow.setTimeout(() => {
+        if (existing) window.clearTimeout(existing);
+        const timer = window.setTimeout(() => {
           this.pendingClickTimers.delete(key);
           void (async () => {
             await this.ensureSidebarOpen();
@@ -69,7 +69,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         this.pendingClickTimers.set(key, timer);
         return null;
       }
-      return origOpen.apply(window, args) as WindowProxy | null;
+      return origOpen.apply(window, args);
     };
 
     // A dblclick on a zotero://select/ link cancels the pending sidebar update
@@ -83,7 +83,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       if (!key) return;
       const pending = this.pendingClickTimers.get(key);
       if (pending) {
-        activeWindow.clearTimeout(pending);
+        window.clearTimeout(pending);
         this.pendingClickTimers.delete(key);
       }
       evt.preventDefault();
@@ -159,11 +159,11 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   onunload(): void {
     if (this.debounceTimer) {
-      activeWindow.clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     for (const timer of this.pendingClickTimers.values()) {
-      activeWindow.clearTimeout(timer);
+      window.clearTimeout(timer);
     }
     this.pendingClickTimers.clear();
     if (this.originalWindowOpen) {
@@ -289,12 +289,12 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   private handleDoubleClick(itemKey: string): void {
     if (this.debounceTimer) {
-      activeWindow.clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     const pending = this.pendingClickTimers.get(itemKey);
     if (pending) {
-      activeWindow.clearTimeout(pending);
+      window.clearTimeout(pending);
       this.pendingClickTimers.delete(itemKey);
     }
     this.openInZotero(`zotero://select/library/items/${itemKey}`);
@@ -302,10 +302,10 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   private onItemKeyChanged(itemKey: string | null): void {
     if (this.debounceTimer) {
-      activeWindow.clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
     }
 
-    this.debounceTimer = activeWindow.setTimeout(() => {
+    this.debounceTimer = window.setTimeout(() => {
       if (itemKey) {
         void (async () => {
           await this.ensureSidebarOpen();
@@ -398,21 +398,25 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        name: "Zotero data directory",
+        desc: "Path to your Zotero data folder (used to load annotation images from cache)",
+        control: {
+          type: "text",
+          key: "zoteroDataDir",
+          placeholder: DEFAULT_SETTINGS.zoteroDataDir,
+          defaultValue: DEFAULT_SETTINGS.zoteroDataDir,
+        },
+      },
+    ];
+  }
 
-    new Setting(containerEl)
-      .setName("Zotero data directory")
-      .setDesc("Path to your Zotero data folder (used to load annotation images from cache)")
-      .addText((text) =>
-        text
-          .setPlaceholder(DEFAULT_SETTINGS.zoteroDataDir)
-          .setValue(this.plugin.settings.zoteroDataDir)
-          .onChange(async (value) => {
-            this.plugin.settings.zoteroDataDir = value;
-            await this.plugin.saveSettings();
-          })
-      );
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    if (key === "zoteroDataDir" && typeof value === "string") {
+      this.plugin.settings.zoteroDataDir = value;
+      await this.plugin.saveSettings();
+    }
   }
 }

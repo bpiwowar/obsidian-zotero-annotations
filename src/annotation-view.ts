@@ -52,8 +52,7 @@ function renderMathInElement(root: HTMLElement): boolean {
     if (!expr) continue;
     const mathEl = renderMath(expr, isDisplay);
     if (isDisplay) {
-      const wrapper = document.createElement("div");
-      wrapper.addClass("zotero-annot-math-display");
+      const wrapper = createDiv({ cls: "zotero-annot-math-display" });
       wrapper.appendChild(mathEl);
       node.replaceWith(wrapper);
     } else {

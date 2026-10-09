@@ -13,8 +13,6 @@ export default defineConfig([
       globals: {
         ...globals.browser,
         ...globals.node,
-        activeWindow: "readonly",
-        activeDocument: "readonly",
       },
     },
     rules: {
