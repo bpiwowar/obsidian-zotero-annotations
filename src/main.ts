@@ -1,6 +1,6 @@
-import { Platform, Plugin, PluginSettingTab, SettingDefinitionItem, App, Notice, TAbstractFile, TFile, debounce, setIcon } from "obsidian";
-import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
-import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
+import { addIcon, Platform, Plugin, PluginSettingTab, SettingDefinitionItem, App, Notice, TAbstractFile, TFile, debounce, setIcon } from "obsidian";
+import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS, ZOTERO_ICON, ZOTERO_ICON_SVG } from "./annotation-view";
+import { ZoteroLink, createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
 import {
   ZoteroWriter,
   fetchAnnotations,
@@ -88,6 +88,10 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   };
   /** key → item summary, for the paper list (null = not a paper, or not found) */
   private summaries = new Map<string, PaperInfo | null>();
+  /** Paper of each PDF attachment met in an open-pdf link */
+  private attachmentPapers = new Map<string, string>();
+  /** The link under the cursor, so that a late attachment lookup does not override a newer one */
+  private cursorLink: ZoteroLink | null = null;
   private mentions!: MentionIndex;
   literature!: LiteratureNotes;
   private syncTimer: number | null = null;
@@ -96,6 +100,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    addIcon(ZOTERO_ICON, ZOTERO_ICON_SVG);
 
     this.literature = new LiteratureNotes(
       this.app,
@@ -179,8 +184,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     // Register the CM6 extension for cursor detection and dblclick handling
     this.registerEditorExtension(
       createCursorDetectorPlugin({
-        onChange: (itemKey) => this.onItemKeyChanged(itemKey),
-        onDoubleClick: (itemKey) => this.handleDoubleClick(itemKey),
+        onChange: (link) => this.onLinkChanged(link),
+        onDoubleClick: (link) => this.handleDoubleClick(link),
       })
     );
 
@@ -856,33 +861,53 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private handleDoubleClick(itemKey: string): void {
+  private handleDoubleClick(link: ZoteroLink): void {
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
-    const pending = this.pendingClickTimers.get(itemKey);
+    const pending = this.pendingClickTimers.get(link.key);
     if (pending) {
       window.clearTimeout(pending);
-      this.pendingClickTimers.delete(itemKey);
+      this.pendingClickTimers.delete(link.key);
     }
-    this.openInZotero(`zotero://select/library/items/${itemKey}`);
+    // The link itself: a PDF link opens the PDF (at its annotation)
+    this.openInZotero(link.url);
   }
 
-  private onItemKeyChanged(itemKey: string | null): void {
+  /** The paper of a link: the item of a `select` link, the parent of the attachment of an `open-pdf` one */
+  private async paperOfLink(link: ZoteroLink): Promise<string | null> {
+    if (link.kind === "select") return link.key;
+    const known = this.attachmentPapers.get(link.key);
+    if (known) return known;
+    let paper = Platform.isDesktop ? ((await fetchItemSummary(link.key))?.key ?? null) : null;
+    if (!paper) {
+      // Zotero not reachable: the literature note naming this PDF
+      const note = this.literature.findNoteOfAttachment(link.key);
+      paper = note && this.literature.keyOf(note);
+    }
+    if (paper) this.attachmentPapers.set(link.key, paper);
+    return paper;
+  }
+
+
+  private onLinkChanged(link: ZoteroLink | null): void {
+    this.cursorLink = link;
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);
     }
 
     this.debounceTimer = window.setTimeout(() => {
-      if (itemKey) {
+      if (link) {
         void (async () => {
+          const itemKey = await this.paperOfLink(link);
+          if (!itemKey || this.cursorLink !== link) return;
           await this.ensureSidebarOpen();
           await this.loadAnnotations(itemKey);
+          if (this.settings.literatureNotes && this.settings.createMode === "cursor") {
+            void this.ensureLiteratureNote(itemKey);
+          }
         })();
-        if (this.settings.literatureNotes && this.settings.createMode === "cursor") {
-          void this.ensureLiteratureNote(itemKey);
-        }
       } else {
         const noteKey = this.followedNoteKey();
         if (noteKey) void this.loadAnnotations(noteKey);
@@ -1002,13 +1027,13 @@ function linksHelp(): DocumentFragment {
   frag.createEl("code", { text: "zotero://open-pdf/library/items/KEY?page=…&annotation=…" });
   frag.appendText(" (annotations) links. To copy them from Zotero, install the ");
   frag.createEl("a", { text: "Actions & Tags", href: "https://github.com/windingwind/zotero-actions-tags" });
-  frag.appendText(" add-on and add its ");
+  frag.appendText(" add-on and import or create the actions of ");
   frag.createEl("a", {
-    text: "\u201cCopy Zotero link\u201d script",
-    href: "https://github.com/windingwind/zotero-actions-tags/discussions/115",
+    text: "these examples",
+    href: "https://github.com/bpiwowar/obsidian-zotero-annotations/blob/main/docs/actions-tags.md",
   });
   frag.appendText(
-    " as an action (operation \u201cScript\u201d, with a shortcut and a menu label; set linkType to \u201cmd\u201d for Markdown links). " +
+    " (copy a Zotero link, a Markdown link, or an annotation as a quote). " +
       "Select a paper, or an annotation in the PDF reader, run the action, and paste into Obsidian."
   );
   return frag;

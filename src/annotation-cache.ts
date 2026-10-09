@@ -15,6 +15,7 @@
  * which could close the block.
  */
 import { EditorState, Extension } from "@codemirror/state";
+import { getFrontMatterInfo } from "obsidian";
 import { ZoteroAnnotation, ZoteroItemInfo } from "./zotero-client";
 
 /** Language of the fenced block */
@@ -100,6 +101,10 @@ export function sameCache(a: string, b: string): boolean {
 export function withCache(text: string, json: string | null): string {
   const body = splitCache(text).text;
   if (json === null) return body;
-  const trimmed = body.replace(/\s+$/, "");
-  return `${trimmed ? `${trimmed}\n\n` : ""}\`\`\`${CACHE_LANGUAGE}\n${json}\n\`\`\`\n`;
+  const block = `\`\`\`${CACHE_LANGUAGE}\n${json}\n\`\`\`\n`;
+  const { contentStart } = getFrontMatterInfo(body);
+  // A note without content keeps a blank line before the block, where the
+  // cursor goes when the note is opened (on the block, it would open it)
+  if (!body.slice(contentStart).trim()) return `${body.slice(0, contentStart)}\n${block}`;
+  return `${body.replace(/\s+$/, "")}\n\n${block}`;
 }

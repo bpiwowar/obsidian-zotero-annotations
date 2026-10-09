@@ -46,7 +46,7 @@ Output: `main.js` in project root.
 
 ### Data flow
 
-1. **Cursor detection** (`cursor-detector.ts`): CM6 ViewPlugin watches cursor position. When it lands on a `zotero://select/library/items/XXXXXXXX` URI, fires a callback with the 8-char item key.
+1. **Cursor detection** (`cursor-detector.ts`): CM6 ViewPlugin watches cursor position. When it lands on a `zotero://select|open-pdf/library/items/XXXXXXXX` URI (bare or in a Markdown link, query included), fires a callback with the link (`ZoteroLink`); `main.ts` maps an `open-pdf` attachment key to its paper (`paperOfLink`: Zotero, else the literature note's `zotero-pdf`). A double click opens the link itself in Zotero.
 2. **Debounce** (`main.ts`): 300ms debounce to avoid spamming API while arrowing through text.
 3. **API calls** (`zotero-client.ts`): Two sequential HTTP calls via Obsidian's `requestUrl`:
    - `GET /api/users/0/items/{itemKey}/children` → find PDF attachments

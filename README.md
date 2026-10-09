@@ -37,19 +37,13 @@ The plugin reacts to two kinds of links:
 - a paper: `zotero://select/library/items/ITEMKEY`
 - an annotation: `zotero://open-pdf/library/items/ATTACHMENTKEY?page=3&annotation=ANNOTATIONKEY`
 
-Zotero has no built-in command to copy them, but the [Actions & Tags](https://github.com/windingwind/zotero-actions-tags) add-on does it with its community script [**Copy Zotero link**](https://github.com/windingwind/zotero-actions-tags/discussions/115):
+Zotero has no built-in command to copy them, but the [Actions & Tags](https://github.com/windingwind/zotero-actions-tags) add-on can, with a script. [**Actions & Tags examples**](docs/actions-tags.md) has ready-made actions — copy a Zotero link, a Markdown link, or an annotation as a quote — to import in one go ([`actions-tags.yml`](docs/actions-tags.yml)) or create one by one:
 
 1. Install Actions & Tags: download the `.xpi` from its [latest release](https://github.com/windingwind/zotero-actions-tags/releases/latest), then in Zotero **Tools → Add-ons → ⚙ → Install Add-on From File…**
-2. In **Zotero Settings → Actions & Tags**, click **+** and create an action:
-   - **Event**: None
-   - **Operation**: Script
-   - **Data**: the script from the [Copy Zotero link discussion](https://github.com/windingwind/zotero-actions-tags/discussions/115); set `linkType = "md"` at its top to get Markdown links (`[title](zotero://…)`), and `linkTextField = "citationKey"` if you prefer citation keys as link text
-   - **Shortcut** (e.g. `Ctrl+Shift+L`) and **Menu Label** (e.g. "Copy Zotero link"), so it shows in the right-click menus
-3. Select a paper in the library — or an annotation in the PDF reader's sidebar — run the action (shortcut or right-click menu), and paste into Obsidian.
+2. In **Zotero Settings → Actions & Tags**, import [`actions-tags.yml`](docs/actions-tags.yml), or click **+** and create an action with **Event** None, **Operation** Script, and as **Data** the [Copy Zotero links script](docs/actions-tags.md#copying-zotero-links)
+3. Give it a **Shortcut**, select a paper in the library — or an annotation in the PDF reader's sidebar — run the action (shortcut or right-click menu), and paste into Obsidian.
 
-With `linkAction = "auto"` (the default), papers get `zotero://select` links and PDFs/annotations get `zotero://open-pdf` links, which open the PDF at the annotation.
-
-The same instructions are in the plugin's settings, under **Getting Zotero links**.
+The plugin's settings link to the same page, under **Getting Zotero links**.
 
 ## Literature notes
 

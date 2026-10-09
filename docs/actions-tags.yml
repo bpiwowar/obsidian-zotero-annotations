@@ -1,0 +1,297 @@
+type: ActionsTagsBackup
+author: obsidian-zotero-annotations
+platformVersion: 10.0.6
+pluginVersion: 2.6.1
+timestamp: '2026-10-09T12:00:00.000Z'
+actions:
+  1760000000001-zoteroan:
+    event: 0
+    operation: 4
+    data: |
+      /**
+       * Copy Zotero links for the Zotero Annotations Obsidian plugin
+       * @usage Select papers in the library, or annotations in the PDF reader, and run the action
+       * @link https://github.com/bpiwowar/obsidian-zotero-annotations/blob/main/docs/actions-tags.md
+       */
+
+      // What to copy:
+      //   "uri"   — the bare link: zotero://select/library/items/KEY
+      //   "md"    — a Markdown link: [Title (Doe et al., 2020)](zotero://…)
+      //   "quote" — for annotations, what the plugin's drag and drop inserts:
+      //             [“text”](zotero://open-pdf/…) [(Doe et al., 2020, p. 3)](zotero://select/…) comment
+      //             (other items get a Markdown link)
+      const format = "uri";
+
+      // Run once for all the selected items, not once per item
+      if (item) return;
+      if (!items?.length) return "[Copy Zotero link] nothing selected";
+
+      /** "library" for the personal library, "groups/ID" for a group (the plugin only follows the former) */
+      function library(it) {
+        const lib = Zotero.Libraries.get(it.libraryID);
+        return lib.libraryType === "user" ? "library" : `groups/${lib.groupID}`;
+      }
+
+      /** "Doe", "Doe & Roe", "Doe et al.", followed by the year */
+      function citation(paper) {
+        const names = paper.getCreators().map((c) => c.lastName || c.name).filter(Boolean);
+        const who = names.length > 2 ? `${names[0]} et al.` : names.join(" & ");
+        return [who, paper.getField("year")].filter(Boolean).join(", ");
+      }
+
+      /** Text that can go between the brackets of a Markdown link */
+      function label(text) {
+        return text.replace(/\s+/g, " ").trim().replace(/([\\[\]])/g, "\\$1");
+      }
+
+      function markdownLink(paper, uri) {
+        const cite = citation(paper);
+        return `[${label(paper.getField("title") + (cite ? ` (${cite})` : ""))}](${uri})`;
+      }
+
+      async function copy(it) {
+        if (it.isAnnotation()) {
+          const attachment = it.parentItem;
+          const paper = attachment.parentItem ?? attachment;
+          const params = [];
+          try {
+            const { pageIndex } = JSON.parse(it.annotationPosition);
+            if (typeof pageIndex === "number") params.push(`page=${pageIndex + 1}`);
+          } catch (e) {
+            Zotero.warn(e);
+          }
+          params.push(`annotation=${it.key}`);
+          const uri = `zotero://open-pdf/${library(attachment)}/items/${attachment.key}?${params.join("&")}`;
+          if (format === "uri") return uri;
+          if (format === "md") return markdownLink(paper, uri);
+
+          const parts = [];
+          if (it.annotationText) parts.push(`[${label(`“${it.annotationText}”`)}](${uri})`);
+          const page = it.annotationPageLabel;
+          const cite = [citation(paper), page && `p. ${page}`].filter(Boolean).join(", ");
+          const locator = page ? `?locator=${encodeURIComponent(page)}` : "";
+          if (cite) parts.push(`[${label(`(${cite})`)}](zotero://select/${library(paper)}/items/${paper.key}${locator})`);
+          if (it.annotationComment) parts.push(it.annotationComment.trim());
+          return parts.join(" ");
+        }
+
+        // A PDF opens in the reader, anything else (paper, note, other attachment) selects its paper
+        const paper = it.isRegularItem() ? it : (it.parentItem ?? it);
+        const uri = it.isPDFAttachment()
+          ? `zotero://open-pdf/${library(it)}/items/${it.key}`
+          : `zotero://select/${library(paper)}/items/${paper.key}`;
+        return format === "uri" ? uri : markdownLink(paper, uri);
+      }
+
+      const texts = [];
+      for (const it of items) texts.push(await copy(it));
+
+      const clipboard = new Zotero.ActionsTags.api.utils.ClipboardHelper();
+      clipboard.addText(texts.join(format === "quote" ? "\n\n" : "\n"), "text/unicode");
+      clipboard.copy();
+
+      return `[Copy Zotero link] ${texts.length} link(s) copied`;
+    shortcut: ''
+    enabled: true
+    menu: Copy Zotero link
+    name: Copy Zotero link
+    showInMenu:
+      item: true
+      collection: false
+      tools: false
+      reader: true
+      readerAnnotation: true
+  1760000000002-zoteroan:
+    event: 0
+    operation: 4
+    data: |
+      /**
+       * Copy Zotero links for the Zotero Annotations Obsidian plugin
+       * @usage Select papers in the library, or annotations in the PDF reader, and run the action
+       * @link https://github.com/bpiwowar/obsidian-zotero-annotations/blob/main/docs/actions-tags.md
+       */
+
+      // What to copy:
+      //   "uri"   — the bare link: zotero://select/library/items/KEY
+      //   "md"    — a Markdown link: [Title (Doe et al., 2020)](zotero://…)
+      //   "quote" — for annotations, what the plugin's drag and drop inserts:
+      //             [“text”](zotero://open-pdf/…) [(Doe et al., 2020, p. 3)](zotero://select/…) comment
+      //             (other items get a Markdown link)
+      const format = "md";
+
+      // Run once for all the selected items, not once per item
+      if (item) return;
+      if (!items?.length) return "[Copy Zotero link] nothing selected";
+
+      /** "library" for the personal library, "groups/ID" for a group (the plugin only follows the former) */
+      function library(it) {
+        const lib = Zotero.Libraries.get(it.libraryID);
+        return lib.libraryType === "user" ? "library" : `groups/${lib.groupID}`;
+      }
+
+      /** "Doe", "Doe & Roe", "Doe et al.", followed by the year */
+      function citation(paper) {
+        const names = paper.getCreators().map((c) => c.lastName || c.name).filter(Boolean);
+        const who = names.length > 2 ? `${names[0]} et al.` : names.join(" & ");
+        return [who, paper.getField("year")].filter(Boolean).join(", ");
+      }
+
+      /** Text that can go between the brackets of a Markdown link */
+      function label(text) {
+        return text.replace(/\s+/g, " ").trim().replace(/([\\[\]])/g, "\\$1");
+      }
+
+      function markdownLink(paper, uri) {
+        const cite = citation(paper);
+        return `[${label(paper.getField("title") + (cite ? ` (${cite})` : ""))}](${uri})`;
+      }
+
+      async function copy(it) {
+        if (it.isAnnotation()) {
+          const attachment = it.parentItem;
+          const paper = attachment.parentItem ?? attachment;
+          const params = [];
+          try {
+            const { pageIndex } = JSON.parse(it.annotationPosition);
+            if (typeof pageIndex === "number") params.push(`page=${pageIndex + 1}`);
+          } catch (e) {
+            Zotero.warn(e);
+          }
+          params.push(`annotation=${it.key}`);
+          const uri = `zotero://open-pdf/${library(attachment)}/items/${attachment.key}?${params.join("&")}`;
+          if (format === "uri") return uri;
+          if (format === "md") return markdownLink(paper, uri);
+
+          const parts = [];
+          if (it.annotationText) parts.push(`[${label(`“${it.annotationText}”`)}](${uri})`);
+          const page = it.annotationPageLabel;
+          const cite = [citation(paper), page && `p. ${page}`].filter(Boolean).join(", ");
+          const locator = page ? `?locator=${encodeURIComponent(page)}` : "";
+          if (cite) parts.push(`[${label(`(${cite})`)}](zotero://select/${library(paper)}/items/${paper.key}${locator})`);
+          if (it.annotationComment) parts.push(it.annotationComment.trim());
+          return parts.join(" ");
+        }
+
+        // A PDF opens in the reader, anything else (paper, note, other attachment) selects its paper
+        const paper = it.isRegularItem() ? it : (it.parentItem ?? it);
+        const uri = it.isPDFAttachment()
+          ? `zotero://open-pdf/${library(it)}/items/${it.key}`
+          : `zotero://select/${library(paper)}/items/${paper.key}`;
+        return format === "uri" ? uri : markdownLink(paper, uri);
+      }
+
+      const texts = [];
+      for (const it of items) texts.push(await copy(it));
+
+      const clipboard = new Zotero.ActionsTags.api.utils.ClipboardHelper();
+      clipboard.addText(texts.join(format === "quote" ? "\n\n" : "\n"), "text/unicode");
+      clipboard.copy();
+
+      return `[Copy Zotero link] ${texts.length} link(s) copied`;
+    shortcut: ''
+    enabled: true
+    menu: Copy Markdown link
+    name: Copy Markdown link
+    showInMenu:
+      item: true
+      collection: false
+      tools: false
+      reader: true
+      readerAnnotation: true
+  1760000000003-zoteroan:
+    event: 0
+    operation: 4
+    data: |
+      /**
+       * Copy Zotero links for the Zotero Annotations Obsidian plugin
+       * @usage Select papers in the library, or annotations in the PDF reader, and run the action
+       * @link https://github.com/bpiwowar/obsidian-zotero-annotations/blob/main/docs/actions-tags.md
+       */
+
+      // What to copy:
+      //   "uri"   — the bare link: zotero://select/library/items/KEY
+      //   "md"    — a Markdown link: [Title (Doe et al., 2020)](zotero://…)
+      //   "quote" — for annotations, what the plugin's drag and drop inserts:
+      //             [“text”](zotero://open-pdf/…) [(Doe et al., 2020, p. 3)](zotero://select/…) comment
+      //             (other items get a Markdown link)
+      const format = "quote";
+
+      // Run once for all the selected items, not once per item
+      if (item) return;
+      if (!items?.length) return "[Copy Zotero link] nothing selected";
+
+      /** "library" for the personal library, "groups/ID" for a group (the plugin only follows the former) */
+      function library(it) {
+        const lib = Zotero.Libraries.get(it.libraryID);
+        return lib.libraryType === "user" ? "library" : `groups/${lib.groupID}`;
+      }
+
+      /** "Doe", "Doe & Roe", "Doe et al.", followed by the year */
+      function citation(paper) {
+        const names = paper.getCreators().map((c) => c.lastName || c.name).filter(Boolean);
+        const who = names.length > 2 ? `${names[0]} et al.` : names.join(" & ");
+        return [who, paper.getField("year")].filter(Boolean).join(", ");
+      }
+
+      /** Text that can go between the brackets of a Markdown link */
+      function label(text) {
+        return text.replace(/\s+/g, " ").trim().replace(/([\\[\]])/g, "\\$1");
+      }
+
+      function markdownLink(paper, uri) {
+        const cite = citation(paper);
+        return `[${label(paper.getField("title") + (cite ? ` (${cite})` : ""))}](${uri})`;
+      }
+
+      async function copy(it) {
+        if (it.isAnnotation()) {
+          const attachment = it.parentItem;
+          const paper = attachment.parentItem ?? attachment;
+          const params = [];
+          try {
+            const { pageIndex } = JSON.parse(it.annotationPosition);
+            if (typeof pageIndex === "number") params.push(`page=${pageIndex + 1}`);
+          } catch (e) {
+            Zotero.warn(e);
+          }
+          params.push(`annotation=${it.key}`);
+          const uri = `zotero://open-pdf/${library(attachment)}/items/${attachment.key}?${params.join("&")}`;
+          if (format === "uri") return uri;
+          if (format === "md") return markdownLink(paper, uri);
+
+          const parts = [];
+          if (it.annotationText) parts.push(`[${label(`“${it.annotationText}”`)}](${uri})`);
+          const page = it.annotationPageLabel;
+          const cite = [citation(paper), page && `p. ${page}`].filter(Boolean).join(", ");
+          const locator = page ? `?locator=${encodeURIComponent(page)}` : "";
+          if (cite) parts.push(`[${label(`(${cite})`)}](zotero://select/${library(paper)}/items/${paper.key}${locator})`);
+          if (it.annotationComment) parts.push(it.annotationComment.trim());
+          return parts.join(" ");
+        }
+
+        // A PDF opens in the reader, anything else (paper, note, other attachment) selects its paper
+        const paper = it.isRegularItem() ? it : (it.parentItem ?? it);
+        const uri = it.isPDFAttachment()
+          ? `zotero://open-pdf/${library(it)}/items/${it.key}`
+          : `zotero://select/${library(paper)}/items/${paper.key}`;
+        return format === "uri" ? uri : markdownLink(paper, uri);
+      }
+
+      const texts = [];
+      for (const it of items) texts.push(await copy(it));
+
+      const clipboard = new Zotero.ActionsTags.api.utils.ClipboardHelper();
+      clipboard.addText(texts.join(format === "quote" ? "\n\n" : "\n"), "text/unicode");
+      clipboard.copy();
+
+      return `[Copy Zotero link] ${texts.length} link(s) copied`;
+    shortcut: ''
+    enabled: true
+    menu: Copy quote
+    name: Copy quote
+    showInMenu:
+      item: false
+      collection: false
+      tools: false
+      reader: false
+      readerAnnotation: true

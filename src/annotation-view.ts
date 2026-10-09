@@ -14,6 +14,11 @@ import { fs } from "./node";
 
 export const VIEW_TYPE_ZOTERO_ANNOTATIONS = "zotero-annotations-view";
 
+/** Icon of the "Open in Zotero" buttons: a Z, for Obsidian's 0 0 100 100 icon box */
+export const ZOTERO_ICON = "zotero";
+export const ZOTERO_ICON_SVG =
+  '<path fill="currentColor" d="M18 12h66v14L40 74h44v14H16V74l44-48H18z"/>';
+
 async function readFileAsBase64(path: string): Promise<string | null> {
   try {
     const buffer = await fs().readFile(path);
@@ -327,42 +332,41 @@ export class AnnotationView extends ItemView {
     // cleanup handled by Obsidian
   }
 
+  /** A toolbar button: its icon, and a label that shows on hover */
+  private toolButton(toolbar: HTMLElement, cls: string, icon: string, label: string, tooltip: string): HTMLElement {
+    const btn = toolbar.createEl("button", { cls: `zotero-annot-tool ${cls}`, attr: { "aria-label": tooltip } });
+    setIcon(btn, icon);
+    btn.createSpan({ cls: "zotero-annot-tool-label", text: label });
+    return btn;
+  }
+
   private renderToolbar(container: HTMLElement): void {
     const toolbar = container.createDiv({ cls: "zotero-annot-toolbar" });
 
     const previous = this.history[this.history.length - 1];
     if (previous) {
-      const backBtn = toolbar.createEl("button", {
-        cls: "zotero-annot-back-btn",
-        attr: { "aria-label": `Back to "${previous.title}"` },
-      });
-      setIcon(backBtn, "arrow-left");
-      backBtn.createSpan({ cls: "zotero-annot-back-label", text: previous.title });
+      const backBtn = this.toolButton(toolbar, "zotero-annot-back-btn", "arrow-left", previous.title, `Back to "${previous.title}"`);
       backBtn.addEventListener("click", () => this.goBack());
     }
 
-    const freezeBtn = toolbar.createEl("button", {
-      cls: `zotero-annot-freeze-btn ${this.frozen ? "is-active" : ""}`,
-      attr: { "aria-label": this.frozen ? "Unpin (auto-update)" : "Pin (freeze current)" },
-    });
-    setIcon(freezeBtn, this.frozen ? "pin-off" : "pin");
-    freezeBtn.createSpan({
-      text: this.frozen ? " Pinned" : " Auto",
-      cls: "zotero-annot-freeze-label",
-    });
+    const freezeBtn = this.toolButton(
+      toolbar,
+      `zotero-annot-freeze-btn ${this.frozen ? "is-active" : ""}`,
+      this.frozen ? "pin-off" : "pin",
+      this.frozen ? "Pinned" : "Auto",
+      this.frozen ? "Unpin (auto-update)" : "Pin (freeze current)"
+    );
     freezeBtn.addEventListener("click", () => this.toggleFreeze());
 
-    const papersBtn = toolbar.createEl("button", {
-      cls: `zotero-annot-papers-btn ${this.mode === "papers" ? "is-active" : ""}`,
-      attr: {
-        "aria-label":
-          this.mode === "papers"
-            ? "Back to the annotations of the item under the cursor"
-            : "List the papers cited in the current note",
-      },
-    });
-    setIcon(papersBtn, "list");
-    papersBtn.createSpan({ text: " Papers", cls: "zotero-annot-papers-label" });
+    const papersBtn = this.toolButton(
+      toolbar,
+      `zotero-annot-papers-btn ${this.mode === "papers" ? "is-active" : ""}`,
+      "list",
+      "Papers",
+      this.mode === "papers"
+        ? "Back to the annotations of the item under the cursor"
+        : "List the papers cited in the current note"
+    );
     papersBtn.addEventListener("click", () => {
       if (this.mode === "papers") this.closePaperList();
       else this.onListPapers();
@@ -370,39 +374,34 @@ export class AnnotationView extends ItemView {
 
     if (this.mode === "item" && this.currentItemKey && this.literatureNotesEnabled()) {
       const itemKey = this.currentItemKey;
-      const noteBtn = toolbar.createEl("button", {
-        cls: "zotero-annot-litnote-btn",
-        attr: { "aria-label": "Open the literature note of this paper (created if needed)" },
-      });
-      setIcon(noteBtn, "file-text");
-      noteBtn.createSpan({ text: " Note", cls: "zotero-annot-papers-label" });
+      const noteBtn = this.toolButton(
+        toolbar,
+        "zotero-annot-litnote-btn",
+        "file-text",
+        "Note",
+        "Open the literature note of this paper (created if needed)"
+      );
       noteBtn.addEventListener("click", () => this.openLiteratureNote(itemKey));
     }
 
     if (this.mode === "item" && this.currentItemKey) {
       const itemKey = this.currentItemKey;
-      const refreshBtn = toolbar.createEl("button", {
-        cls: "zotero-annot-refresh-btn",
-        attr: {
-          "aria-label":
-            "Refresh from Zotero (annotations and literature note); shift-click overwrites the note's edits",
-        },
-      });
-      setIcon(refreshBtn, "refresh-cw");
+      const refreshBtn = this.toolButton(
+        toolbar,
+        "zotero-annot-refresh-btn",
+        "refresh-cw",
+        "Refresh",
+        "Refresh from Zotero (annotations and literature note); shift-click overwrites the note's edits"
+      );
       refreshBtn.addEventListener("click", (evt) => this.onRefresh(itemKey, evt.shiftKey));
-    }
 
-    if (this.mode === "item" && this.currentItemKey) {
-      const linkBtn = toolbar.createSpan({
-        cls: "zotero-annot-open-link",
-        text: "Open in Zotero",
-      });
-      const itemKey = this.currentItemKey;
+      const linkBtn = this.toolButton(toolbar, "zotero-annot-open-link", ZOTERO_ICON, "Zotero", "Open in Zotero");
       linkBtn.addEventListener("click", () => {
         this.openExternal(`zotero://select/library/items/${itemKey}`);
       });
     }
   }
+
 
   /**
    * Creates a labelled toggle + content div.
@@ -462,7 +461,7 @@ export class AnnotationView extends ItemView {
         cls: "zotero-annot-related-open",
         attr: { "aria-label": "Open in Zotero" },
       });
-      setIcon(openBtn, "external-link");
+      setIcon(openBtn, ZOTERO_ICON);
       openBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
         this.openExternal(`zotero://select/library/items/${rel.key}`);
@@ -628,7 +627,7 @@ export class AnnotationView extends ItemView {
         cls: "zotero-annot-paper-open",
         attr: { "aria-label": "Open in Zotero" },
       });
-      setIcon(openBtn, "external-link");
+      setIcon(openBtn, ZOTERO_ICON);
       openBtn.addEventListener("click", (evt) => {
         evt.stopPropagation();
         this.openExternal(`zotero://select/library/items/${paper.key}`);

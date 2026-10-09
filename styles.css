@@ -8,11 +8,11 @@
   background: var(--background-secondary);
 }
 
-.view-content .zotero-annot-back-btn {
+/* Toolbar buttons: an icon, the label expanding on hover */
+.view-content .zotero-annot-tool {
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-shrink: 1;
+  flex-shrink: 0;
   min-width: 0;
   cursor: pointer;
   padding: 4px 8px;
@@ -23,57 +23,42 @@
   font-size: 12px;
 }
 
-.view-content .zotero-annot-back-btn:hover {
+.view-content .zotero-annot-tool:hover {
   color: var(--text-normal);
   background: var(--background-modifier-hover);
 }
 
-.view-content .zotero-annot-back-btn svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-
-.view-content .zotero-annot-back-label {
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.view-content .zotero-annot-freeze-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.view-content .zotero-annot-freeze-btn.is-active {
+.view-content .zotero-annot-tool.is-active {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
   border-color: var(--interactive-accent);
 }
 
-.view-content .zotero-annot-freeze-label {
-  font-size: 12px;
+.view-content .zotero-annot-tool svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.view-content .zotero-annot-tool-label {
+  max-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width 0.2s ease, margin-left 0.2s ease, opacity 0.2s ease;
+}
+
+.view-content .zotero-annot-tool:hover .zotero-annot-tool-label,
+.view-content .zotero-annot-tool:focus-visible .zotero-annot-tool-label {
+  max-width: 110px;
+  margin-left: 4px;
+  opacity: 1;
 }
 
 .view-content .zotero-annot-open-link {
   margin-left: auto;
-  font-size: 12px;
-  color: var(--text-accent);
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.view-content .zotero-annot-open-link:hover {
-  text-decoration: underline;
 }
 
 .view-content .zotero-annot-header {
@@ -426,36 +411,6 @@
 }
 
 /* Papers of the current note, laid out along its headings */
-.view-content .zotero-annot-papers-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-primary);
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.view-content .zotero-annot-papers-btn:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
-
-.view-content .zotero-annot-papers-btn.is-active {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  border-color: var(--interactive-accent);
-}
-
-.view-content .zotero-annot-papers-btn svg {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-}
-
 .view-content .zotero-annot-paper-outline {
   padding: 4px 10px 12px;
 }
