@@ -22,3 +22,25 @@ export function confirm(app: App, title: string, message: string, action: string
     modal.open();
   });
 }
+
+/** Asks to pick one of `options` (button labels); resolves to its index, or null when dismissed. */
+export function choose(app: App, title: string, message: string, options: string[]): Promise<number | null> {
+  return new Promise((resolve) => {
+    let choice: number | null = null;
+    const modal = new Modal(app);
+    modal.setTitle(title);
+    for (const paragraph of message.split("\n\n")) modal.contentEl.createEl("p", { text: paragraph });
+    const setting = new Setting(modal.contentEl);
+    options.forEach((label, i) => {
+      setting.addButton((b) => {
+        b.setButtonText(label).onClick(() => {
+          choice = i;
+          modal.close();
+        });
+        if (i === 0) b.setCta();
+      });
+    });
+    modal.onClose = () => resolve(choice);
+    modal.open();
+  });
+}

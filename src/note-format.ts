@@ -72,6 +72,7 @@ export function attachmentReaderLink(key: string): string {
 export interface NoteAnnotation {
   attachmentURI?: string;
   annotationKey?: string;
+  color?: string;
   pageLabel?: string;
   position?: {
     pageIndex?: number;
@@ -79,9 +80,17 @@ export interface NoteAnnotation {
     nextPageRects?: number[][];
     /** EPUB (FragmentSelector) and snapshot (CssSelector) positions */
     type?: string;
+    conformsTo?: string;
     value?: string;
   };
 }
+
+/** How Zotero marks a quote in note HTML */
+export type QuoteKind = "highlight" | "underline";
+
+const OPEN_PDF = "zotero://open-pdf/";
+
+const EPUB_CFI = "http://www.idpf.org/epub/linking/cfi/epub-cfi.html";
 
 /** "x1,y1,x2,y2;x1,y1,x2,y2" (to 0.01 pt) */
 function encodeRects(rects: number[][]): string {
@@ -94,9 +103,10 @@ function encodeRects(rects: number[][]): string {
  * when the quote comes from an annotation). The other parameters, ignored by
  * Zotero, keep what is needed to rebuild the quote when the note goes back to
  * Zotero: `label` (page label, when not the page number), `rects` and `next`
- * (highlight rectangles on the page and on the next one).
+ * (highlight rectangles on the page and on the next one), `color` and
+ * `kind=underline`. {@link parseAnnotationLink} reads them back.
  */
-export function annotationLink(target: string, annotation: NoteAnnotation): string {
+export function annotationLink(target: string, annotation: NoteAnnotation, kind: QuoteKind = "highlight"): string {
   const params: string[] = [];
   const pos = annotation.position;
   if (pos?.type === "FragmentSelector" && pos.value) {
@@ -115,7 +125,54 @@ export function annotationLink(target: string, annotation: NoteAnnotation): stri
   if (annotation.annotationKey) params.push(`annotation=${annotation.annotationKey}`);
   if (pos?.rects?.length) params.push(`rects=${encodeRects(pos.rects)}`);
   if (pos?.nextPageRects?.length) params.push(`next=${encodeRects(pos.nextPageRects)}`);
+  if (annotation.color) params.push(`color=${annotation.color.replace(/^#/, "")}`);
+  if (kind !== "highlight") params.push(`kind=${kind}`);
   return `${OPEN_PDF}${target}${params.length ? `?${params.join("&")}` : ""}`;
+}
+
+/** "x1,y1,x2,y2;…" → rectangles */
+function decodeRects(text: string): number[][] {
+  return text
+    .split(";")
+    .map((r) => r.split(",").map(Number))
+    .filter((r) => r.length === 4 && r.every((n) => Number.isFinite(n)));
+}
+
+/** "zotero://<kind>/library/items/KEY?a=b" → target ("library/items/KEY") and parameters */
+function parseZoteroUrl(href: string, kind: string): { target: string; params: URLSearchParams } | null {
+  const m = new RegExp(`^zotero://${kind}/((?:library|groups/\\d+)/items/[A-Z0-9]{8})(?:\\?(.*))?$`).exec(href.trim());
+  return m ? { target: m[1], params: new URLSearchParams(m[2] || "") } : null;
+}
+
+/** The quote of a {@link annotationLink} (attachmentURI left to the caller), or null for other links */
+export function parseAnnotationLink(
+  href: string
+): { target: string; annotation: NoteAnnotation; kind: QuoteKind } | null {
+  const url = parseZoteroUrl(href, "open-pdf");
+  if (!url) return null;
+  const p = url.params;
+  const annotation: NoteAnnotation = {};
+  const key = p.get("annotation");
+  if (key) annotation.annotationKey = key;
+  const color = p.get("color");
+  if (color) annotation.color = `#${color}`;
+  const page = p.get("page");
+  const label = p.get("label") ?? page;
+  if (label) annotation.pageLabel = label;
+  const cfi = p.get("cfi");
+  const sel = p.get("sel");
+  if (cfi) {
+    annotation.position = { type: "FragmentSelector", conformsTo: EPUB_CFI, value: cfi };
+  } else if (sel) {
+    annotation.position = { type: "CssSelector", value: sel };
+  } else if (page && /^\d+$/.test(page)) {
+    annotation.position = { pageIndex: parseInt(page, 10) - 1 };
+    const rects = p.get("rects");
+    if (rects) annotation.position.rects = decodeRects(rects);
+    const next = p.get("next");
+    if (next) annotation.position.nextPageRects = decodeRects(next);
+  }
+  return { target: url.target, annotation, kind: p.get("kind") === "underline" ? "underline" : "highlight" };
 }
 
 /** `zotero://select` link to a cited item; `locator` is the cited page */
@@ -123,10 +180,16 @@ export function citationLink(target: string, locator?: string): string {
   return `zotero://select/${target}${locator ? `?locator=${encodeURIComponent(locator)}` : ""}`;
 }
 
+/** The cited item of a {@link citationLink}, or null for other links */
+export function parseCitationLink(href: string): { target: string; locator?: string } | null {
+  const url = parseZoteroUrl(href, "select");
+  if (!url) return null;
+  const locator = url.params.get("locator");
+  return locator ? { target: url.target, locator } : { target: url.target };
+}
+
 /** Display width of annotation images without one (Obsidian's `![alt|width](…)`) */
 const IMAGE_WIDTH = 300;
-
-const OPEN_PDF = "zotero://open-pdf/";
 
 /**
  * An annotation image copied into the vault. Its alt text is the annotation
@@ -137,6 +200,11 @@ const OPEN_PDF = "zotero://open-pdf/";
 export function annotationImage(imagePath: string, href: string, width: number = IMAGE_WIDTH): string {
   const alt = href.startsWith(OPEN_PDF) ? href.slice(OPEN_PDF.length) : href;
   return `![${alt}|${width}](${encodeURI(imagePath)})`;
+}
+
+/** The annotation of an {@link annotationImage}'s alt text (without its `|width`), or null */
+export function parseImageAlt(alt: string): ReturnType<typeof parseAnnotationLink> {
+  return /^(library|groups\/\d+)\/items\//.test(alt) ? parseAnnotationLink(OPEN_PDF + alt) : null;
 }
 
 /** Text usable as a Markdown link label */

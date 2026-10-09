@@ -1,7 +1,14 @@
 import { Plugin, PluginSettingTab, SettingDefinitionItem, App, Notice, TAbstractFile, TFile, debounce } from "obsidian";
 import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
 import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
-import { fetchAnnotations, fetchItemInfo, fetchItemSummary, fetchLibraryState, isZoteroRunning } from "./zotero-client";
+import {
+  ZoteroWriter,
+  fetchAnnotations,
+  fetchItemInfo,
+  fetchItemSummary,
+  fetchLibraryState,
+  isZoteroRunning,
+} from "./zotero-client";
 import { Mention, MentionIndex } from "./mention-index";
 import { PaperHit, PaperInfo, buildPaperOutline } from "./paper-outline";
 import { LiteratureNotes } from "./literature-notes";
@@ -22,6 +29,10 @@ interface ZoteroAnnotationsSettings {
   imageFolder: string;
   /** Minutes between checks for changes in Zotero (0 = only on focus / when a paper is shown) */
   syncInterval: number;
+  /** Send edits of literature notes to Zotero without being asked */
+  pushEdits: boolean;
+  /** Key given by Zotero to write to the library ("Always allow"), empty until then */
+  zoteroApiKey: string;
   /** Show the paper of the open literature note in the sidebar */
   followNote: boolean;
   /** Most words of the title kept in note names */
@@ -37,6 +48,8 @@ const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
   notesFolder: "Zotero",
   imageFolder: "Zotero/images",
   syncInterval: 5,
+  pushEdits: true,
+  zoteroApiKey: "",
   followNote: true,
   titleMaxWords: 6,
   titleCutAt: ":",
@@ -47,6 +60,9 @@ const DOUBLE_CLICK_MS = 300;
 
 /** Showing a paper asks Zotero whether anything changed at most this often */
 const PAPER_CHECK_MS = 10_000;
+
+/** Edits of a literature note are sent to Zotero once the note was left alone this long */
+const PUSH_IDLE_MS = 30_000;
 
 export default class ZoteroAnnotationsPlugin extends Plugin {
   settings: ZoteroAnnotationsSettings = DEFAULT_SETTINGS;
@@ -74,6 +90,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   private mentions!: MentionIndex;
   literature!: LiteratureNotes;
   private syncTimer: number | null = null;
+  /** Pending sends of edited literature notes, by path */
+  private pushTimers = new Map<string, number>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -85,7 +103,15 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         ...this.settings,
         titleOptions: { maxWords: this.settings.titleMaxWords, cutAt: this.settings.titleCutAt },
       }),
-      this.manifest.dir ? `${this.manifest.dir}/literature-notes.json` : null
+      this.manifest.dir ? `${this.manifest.dir}/literature-notes.json` : null,
+      new ZoteroWriter(
+        "Obsidian Zotero Annotations",
+        () => this.settings.zoteroApiKey || null,
+        async (key) => {
+          this.settings.zoteroApiKey = key ?? "";
+          await this.saveSettings();
+        }
+      )
     );
 
     // Index of vault notes linking to Zotero items. The vault scan is lazy
@@ -231,6 +257,17 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "push-literature-note",
+      name: "Send literature note edits to Zotero",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!this.settings.literatureNotes || !file || !this.literature.keyOf(file)) return false;
+        if (!checking) void this.pushLiteratureNote(file, true);
+        return true;
+      },
+    });
+
+    this.addCommand({
       id: "sync-literature-notes",
       name: "Sync literature notes with Zotero",
       checkCallback: (checking) => {
@@ -308,7 +345,11 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       await this.currentLibraryVersion(0);
       const key = this.getView()?.getCurrentItemKey();
       if (key) await this.revalidate(key);
-      if (this.settings.literatureNotes) await this.literature.sync();
+      if (this.settings.literatureNotes) {
+        // Edits go out first, so that the sync that follows finds them in Zotero
+        if (this.settings.pushEdits) await this.literature.pushAll();
+        await this.literature.sync();
+      }
     } catch (e) {
       console.warn("Zotero Annotations: sync failed", e);
     }
@@ -475,13 +516,44 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     );
   }
 
+  /** Sends the edits of a literature note to Zotero; `interactive`: asked by the user (conflicts, errors shown) */
+  private async pushLiteratureNote(file: TFile, interactive = false): Promise<void> {
+    window.clearTimeout(this.pushTimers.get(file.path));
+    this.pushTimers.delete(file.path);
+    try {
+      await this.literature.push(file, interactive);
+    } catch (e) {
+      if (interactive) new Notice(`Could not send the edits to Zotero: ${(e as Error).message}`);
+      else console.warn(`Zotero Annotations: could not send ${file.path} to Zotero`, e);
+    }
+  }
+
   private registerLiteratureNoteEvents(): void {
-    // Refresh a literature note when it is opened
+    // Refresh a literature note when it is opened; send the edits of the one left
+    let previous: TFile | null = null;
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
-        if (file && this.settings.literatureNotes) void this.literature.onOpen(file);
+        if (!this.settings.literatureNotes) return;
+        if (previous && previous !== file && this.settings.pushEdits && this.literature.keyOf(previous)) {
+          void this.pushLiteratureNote(previous);
+        }
+        previous = file;
+        if (file) void this.literature.onOpen(file);
       })
     );
+    // …and once it has not been edited for a while
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (!(file instanceof TFile) || !this.settings.literatureNotes || !this.settings.pushEdits) return;
+        if (!this.literature.keyOf(file)) return;
+        window.clearTimeout(this.pushTimers.get(file.path));
+        this.pushTimers.set(
+          file.path,
+          window.setTimeout(() => void this.pushLiteratureNote(file), PUSH_IDLE_MS)
+        );
+      })
+    );
+    this.register(() => this.pushTimers.forEach((t) => window.clearTimeout(t)));
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (!(file instanceof TFile) || !this.literature.keyOf(file)) return;
@@ -490,6 +562,12 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
             .setTitle("Refresh from Zotero")
             .setIcon("refresh-cw")
             .onClick(() => void this.refreshLiteratureNote(file))
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("Send edits to Zotero")
+            .setIcon("upload")
+            .onClick(() => void this.pushLiteratureNote(file, true))
         );
       })
     );
@@ -867,6 +945,15 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
             desc: "0 checks only when Obsidian regains focus, or when a paper or its literature note is shown.",
             visible: () => !off(),
             control: { type: "number", key: "syncInterval", min: 0, defaultValue: DEFAULT_SETTINGS.syncInterval },
+          },
+          {
+            name: "Send edits to Zotero",
+            desc:
+              "Note sections edited in Obsidian update their Zotero note when you leave the note, after 30 s " +
+              "without typing, and on each check. Otherwise use \"Send literature note edits to Zotero\". " +
+              "The first write asks for permission in Zotero (choose \"Always allow\").",
+            visible: () => !off(),
+            control: { type: "toggle", key: "pushEdits", defaultValue: DEFAULT_SETTINGS.pushEdits },
           },
         ],
       },

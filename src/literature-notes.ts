@@ -17,16 +17,21 @@
  *     …
  *     %%/zt-note%%
  *
- * Each region (or the whole body) mirrors one Zotero child note. A region is refreshed
- * from Zotero only while its text is still what was last written (tracked by
- * hash); a region edited in Obsidian is left alone. Annotations are not
- * copied into notes: the sidebar shows them.
+ * Each region (or the whole body) mirrors one Zotero child note, both ways:
+ * a note changed in Zotero replaces its region while the region is still
+ * what was last written (tracked by hash), a region edited in Obsidian is
+ * sent to Zotero ({@link LiteratureNotes.push}) while the Zotero note is
+ * still what was last seen (tracked by hash of its HTML: Zotero bumps
+ * versions without changes). When both changed, the user chooses.
+ * Annotations are not copied into notes: the sidebar shows them.
  */
-import { App, Notice, TFile, htmlToMarkdown, normalizePath } from "obsidian";
+import { App, Notice, TFile, arrayBufferToBase64, htmlToMarkdown, normalizePath } from "obsidian";
 import { createHash } from "crypto";
 import { readFile } from "fs/promises";
 import {
   ZoteroApiItem,
+  ZoteroConflictError,
+  ZoteroWriter,
   fetchAttachmentPath,
   fetchChangedItems,
   fetchChildren,
@@ -50,6 +55,8 @@ import {
   annotationLink,
   citationLink,
 } from "./note-format";
+import { ImageRef, imageSources, markdownToHtml } from "./note-html";
+import { choose } from "./confirm-modal";
 
 export interface LiteratureNoteSettings {
   /** Folder new literature notes are created in */
@@ -73,10 +80,12 @@ const MAX_CHANGED_LOOKUP = 1000;
 
 
 interface RegionState {
-  /** Zotero version of the note when it was last written to the file */
+  /** Zotero version of the note when last synced */
   version: number;
-  /** Hash of the region text as last written */
+  /** Hash of the region text when last synced */
   hash: string;
+  /** Hash of the note's HTML in Zotero when last synced (absent in older state) */
+  html?: string;
 }
 
 interface TrackedNote {
@@ -132,6 +141,45 @@ interface RenderedNote {
   key: string;
   version: number;
   markdown: string;
+  /** The note's HTML in Zotero */
+  html: string;
+}
+
+/** Whether a Zotero note is still what was last synced */
+function zoteroUnchanged(prev: RegionState, note: { version: number; html: string }): boolean {
+  return prev.html !== undefined ? prev.html === hash(note.html) : prev.version === note.version;
+}
+
+/** Zotero note HTML: the body in the wrapper of the note it replaces (schema version, cited items) */
+function wrapNoteHtml(body: string, previous: string | null): string {
+  let attrs = ' data-schema-version="9"';
+  const wrapper = previous
+    ? new DOMParser().parseFromString(previous, "text/html").querySelector("body > div[data-schema-version]")
+    : null;
+  if (wrapper) {
+    attrs = Array.from(wrapper.attributes)
+      .map((a) => ` ${a.name}="${a.value.replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`)
+      .join("");
+  }
+  return `<div${attrs}>${body}</div>`;
+}
+
+function noteHtml(note: ZoteroApiItem): string {
+  return (note.data.note as string) || "";
+}
+
+/** Raised when a Zotero note changed since the region pushed over it was last synced */
+class PushConflict extends Error {
+  constructor(readonly note: ZoteroApiItem) {
+    super("The note changed in Zotero");
+  }
+}
+
+/** A region edited on both sides */
+interface Conflict {
+  key: string;
+  body: string;
+  note: ZoteroApiItem;
 }
 
 export class LiteratureNotes {
@@ -140,12 +188,15 @@ export class LiteratureNotes {
   private locks = new Map<string, Promise<unknown>>();
   private lastRefresh = new Map<string, number>();
   private syncing: Promise<void> | null = null;
+  /** Conflicts already reported ("KEY@version"), so that background pushes report each once */
+  private reported = new Set<string>();
 
   constructor(
     private app: App,
     private settings: () => LiteratureNoteSettings,
     /** Vault-relative path of the state file, or null to keep it in memory */
-    private statePath: string | null
+    private statePath: string | null,
+    private writer: ZoteroWriter
   ) {}
 
   // -------------------------------------------------------------------------
@@ -261,6 +312,7 @@ export class LiteratureNotes {
     const tracked = this.state.items[itemKey];
     const known = tracked?.regions || {};
     const kept: string[] = [];
+    const untouched = new Set<string>();
 
     // The Zotero note held without markers (see `noteLayout`), if any
     let single: string | null = null;
@@ -279,6 +331,9 @@ export class LiteratureNotes {
         if (!region) {
           // A region removed from the file on purpose is not brought back
           if (!prev || overwrite) added.push(note);
+        } else if (!overwrite && prev && (prev.html !== undefined || hash(region.body) !== prev.hash) && zoteroUnchanged(prev, note)) {
+          // Zotero has nothing new: the text stands (edits go to Zotero by `push`)
+          untouched.add(note.key);
         } else if (overwrite || !prev || hash(region.body) === prev.hash) {
           replaced.set(region, note.markdown);
         } else {
@@ -334,10 +389,11 @@ export class LiteratureNotes {
     });
 
     await this.writeFrontmatter(file, bundle, single);
-    await this.track(itemKey, file, bundle, notes, new Set(kept));
+    await this.track(itemKey, file, bundle, notes, new Set([...kept, ...untouched]));
     if (kept.length > 0) {
       new Notice(
-        `${file.basename}: ${kept.length} note section(s) edited in Obsidian were kept as they are.`
+        `${file.basename}: ${kept.length} note section(s) changed both in Obsidian and in Zotero were ` +
+          'kept as they are: use "Send literature note edits to Zotero" to choose a version.'
       );
     }
   }
@@ -362,7 +418,10 @@ export class LiteratureNotes {
     });
   }
 
-  /** Records what was written, so later updates can tell local edits apart. */
+  /**
+   * Records what was written, so later updates can tell local edits apart.
+   * Regions in `keptLocal` (not written) keep their previous state.
+   */
   private async track(
     itemKey: string,
     file: TFile,
@@ -378,13 +437,242 @@ export class LiteratureNotes {
       if (keptLocal.has(note.key)) {
         if (prev[note.key]) regions[note.key] = prev[note.key];
       } else if (inFile.has(note.key) || prev[note.key]) {
-        regions[note.key] = { version: note.version, hash: hash(note.markdown) };
+        regions[note.key] = { version: note.version, hash: hash(note.markdown), html: hash(note.html) };
       }
     }
     const descendants = [...bundle.attachments.map((a) => a.key), ...bundle.notes.map((n) => n.key)];
     this.state.items[itemKey] = { path: file.path, descendants, regions, fileHash: hash(text) };
     this.lastRefresh.set(itemKey, Date.now());
     await this.saveState();
+  }
+
+  // -------------------------------------------------------------------------
+  // Vault → Zotero
+  // -------------------------------------------------------------------------
+
+  /** Pushes every tracked literature note (see {@link push}) */
+  async pushAll(): Promise<void> {
+    await this.loadState();
+    for (const tracked of Object.values(this.state.items)) {
+      const file = this.app.vault.getAbstractFileByPath(tracked.path);
+      if (file instanceof TFile) await this.push(file);
+    }
+  }
+
+  /**
+   * Sends the edits of a literature note to Zotero: regions edited in
+   * Obsidian update their Zotero note, new regions (and the body of a paper
+   * without Zotero notes) become Zotero notes. A region removed in Obsidian
+   * is not deleted in Zotero. `interactive` (asked by the user) sends every
+   * region, edited or not, and asks about regions changed on both sides;
+   * otherwise those are reported once.
+   */
+  async push(file: TFile, interactive = false): Promise<void> {
+    const itemKey = this.keyOf(file);
+    if (!itemKey) return;
+    await this.loadState();
+    const { sent, conflicts } = await this.locked(itemKey, () => this.doPush(itemKey, file, interactive));
+    if (interactive) {
+      for (const conflict of conflicts) await this.resolveConflict(itemKey, file, conflict);
+      if (conflicts.length === 0) {
+        new Notice(sent > 0 ? `${file.basename}: ${sent} note(s) sent to Zotero.` : `${file.basename}: no Zotero note to send.`);
+      }
+      return;
+    }
+    const fresh = conflicts.filter((c) => !this.reported.has(`${c.key}@${c.note.version}`));
+    for (const c of fresh) this.reported.add(`${c.key}@${c.note.version}`);
+    if (fresh.length > 0) {
+      new Notice(
+        `${file.basename}: ${fresh.length} note section(s) changed both in Obsidian and in Zotero. ` +
+          'Use "Send literature note edits to Zotero" to choose a version.'
+      );
+    }
+  }
+
+  private async doPush(itemKey: string, file: TFile, all: boolean): Promise<{ sent: number; conflicts: Conflict[] }> {
+    const tracked = this.state.items[itemKey];
+    if (!tracked || tracked.path !== file.path) return { sent: 0, conflicts: [] };
+    const text = await this.app.vault.read(file);
+    const layout = noteLayout(text);
+    const edited = layout.regions.filter(
+      (r) => !r.key || (tracked.regions[r.key] && (all || hash(r.body) !== tracked.regions[r.key].hash))
+    );
+    // The body of a paper that never had Zotero notes becomes one
+    const body = text.slice(layout.contentStart).trim();
+    const newBody = layout.regions.length === 0 && Object.keys(tracked.regions).length === 0 ? body : "";
+    if (edited.length === 0 && !newBody) return { sent: 0, conflicts: [] };
+
+    const bundle = await this.fetchBundle(itemKey);
+    if (!bundle) return { sent: 0, conflicts: [] };
+    const { serverId } = await fetchLibraryState();
+    const notes = new Map(bundle.notes.map((n) => [n.key, n]));
+    const conflicts: Conflict[] = [];
+    const created: { key: string; body: string }[] = [];
+    let sent = 0;
+
+    for (const region of edited) {
+      if (!region.key) {
+        const { key, state } = await this.createNote(serverId, bundle, file, region.body);
+        created.push({ key, body: region.body });
+        tracked.regions[key] = state;
+        continue;
+      }
+      const note = notes.get(region.key);
+      // Deleted in Zotero: the text stays in Obsidian only
+      if (!note) continue;
+      const prev = tracked.regions[region.key];
+      try {
+        if (!zoteroUnchanged(prev, { version: note.version, html: noteHtml(note) })) throw new PushConflict(note);
+        tracked.regions[region.key] = await this.updateNote(serverId, bundle, file, region.key, region.body, note, prev);
+        sent++;
+      } catch (e) {
+        if (!(e instanceof PushConflict)) throw e;
+        conflicts.push({ key: region.key, body: region.body, note: e.note });
+      }
+    }
+
+    let single: string | null = null;
+    if (newBody) {
+      const { key, state } = await this.createNote(serverId, bundle, file, newBody);
+      tracked.regions[key] = state;
+      single = key;
+    }
+    // Name the new notes in the file
+    if (created.length > 0) {
+      await this.app.vault.process(file, (current) => {
+        let out = current;
+        for (const c of created) {
+          const region = noteLayout(out).regions.find((r) => !r.key && hash(r.body) === hash(c.body));
+          if (region) out = out.slice(0, region.start) + noteRegion(c.key, region.body) + out.slice(region.end);
+        }
+        return out;
+      });
+    }
+    if (single) {
+      const key = single;
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+        fm[SINGLE_NOTE_PROPERTY] = key;
+      });
+    }
+    const newKeys = [...created.map((c) => c.key), ...(single ? [single] : [])];
+    tracked.descendants.push(...newKeys);
+    await this.saveState();
+    return { sent: sent + newKeys.length, conflicts };
+  }
+
+  /** Replaces a Zotero note by a region of the file; its new sync state */
+  private async updateNote(
+    serverId: string,
+    bundle: ItemBundle,
+    file: TFile,
+    key: string,
+    body: string,
+    note: ZoteroApiItem,
+    prev: RegionState
+  ): Promise<RegionState> {
+    let current = note;
+    for (let attempt = 0; ; attempt++) {
+      const html = wrapNoteHtml(await this.regionHtml(body, file.path, bundle, noteHtml(current)), noteHtml(current));
+      try {
+        await this.writer.patchItem(serverId, key, current.version, { note: html });
+        break;
+      } catch (e) {
+        if (!(e instanceof ZoteroConflictError) || attempt > 0) throw e;
+        // Zotero bumps versions on its own: only a change of content is a conflict
+        current = await fetchItem(key);
+        if (!zoteroUnchanged(prev, { version: current.version, html: noteHtml(current) })) throw new PushConflict(current);
+      }
+    }
+    const fresh = await fetchItem(key);
+    return { version: fresh.version, hash: hash(body), html: hash(noteHtml(fresh)) };
+  }
+
+  /** Creates a Zotero note of the paper from a region of the file */
+  private async createNote(
+    serverId: string,
+    bundle: ItemBundle,
+    file: TFile,
+    body: string
+  ): Promise<{ key: string; state: RegionState }> {
+    const html = wrapNoteHtml(await this.regionHtml(body, file.path, bundle, null), null);
+    const [key] = await this.writer.createItems(serverId, [{ itemType: "note", parentItem: bundle.item.key, note: html }]);
+    const fresh = await fetchItem(key);
+    return { key, state: { version: fresh.version, hash: hash(body), html: hash(noteHtml(fresh)) } };
+  }
+
+  /** Zotero note HTML of a region (inside the wrapper); `previous` is the HTML it replaces */
+  private async regionHtml(body: string, sourcePath: string, bundle: ItemBundle, previous: string | null): Promise<string> {
+    const library = bundle.item.library;
+    const uri = (target: string): string => {
+      if (target.startsWith("groups/")) return `http://zotero.org/${target}`;
+      if (library?.type !== "user") throw new Error("Unknown Zotero user library");
+      return `http://zotero.org/users/${library.id}/${target.replace(/^library\//, "")}`;
+    };
+    // Images of the note in Zotero keep their attachment (Zotero deletes unreferenced ones)
+    const attachments = new Set<string>();
+    if (previous) {
+      const doc = new DOMParser().parseFromString(previous, "text/html");
+      for (const img of Array.from(doc.querySelectorAll("img[data-attachment-key]"))) {
+        attachments.add(img.getAttribute("data-attachment-key") as string);
+      }
+    }
+    const images = new Map<string, ImageRef>();
+    for (const src of imageSources(body)) {
+      const file =
+        this.app.metadataCache.getFirstLinkpathDest(src, sourcePath) ??
+        this.app.vault.getAbstractFileByPath(normalizePath(src));
+      if (!(file instanceof TFile)) continue;
+      if (attachments.has(file.basename)) {
+        images.set(src, { attachmentKey: file.basename });
+        continue;
+      }
+      // Other images go as data: Zotero imports PNG and JPEG images when the note is opened
+      const type = ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg" } as Record<string, string>)[
+        file.extension.toLowerCase()
+      ];
+      if (!type) continue;
+      const data = await this.app.vault.readBinary(file);
+      images.set(src, { dataUrl: `data:${type};base64,${arrayBufferToBase64(data)}` });
+    }
+    return markdownToHtml(body, { uri, images, paper: uri(`library/items/${bundle.item.key}`) });
+  }
+
+  /** Asks which side wins for a region changed in Obsidian and in Zotero */
+  private async resolveConflict(itemKey: string, file: TFile, conflict: Conflict): Promise<void> {
+    const preview = conflict.body.replace(/\s+/g, " ").slice(0, 120);
+    const choice = await choose(
+      this.app,
+      "Note changed in Obsidian and in Zotero",
+      `A note of "${file.basename}" was edited in Obsidian and changed in Zotero since they were last in sync:\n\n` +
+        `“${preview}${conflict.body.length > 120 ? "…" : ""}”`,
+      ["Keep Obsidian version", "Keep Zotero version", "Decide later"]
+    );
+    if (choice !== 0 && choice !== 1) return;
+    await this.locked(itemKey, async () => {
+      const tracked = this.state.items[itemKey];
+      const note = await fetchItem(conflict.key);
+      const region = noteLayout(await this.app.vault.read(file)).regions.find((r) => r.key === conflict.key);
+      if (!tracked || !region) return;
+      if (choice === 0) {
+        const bundle = await this.fetchBundle(itemKey);
+        if (!bundle) return;
+        const { serverId } = await fetchLibraryState();
+        const seen: RegionState = { version: note.version, hash: "", html: hash(noteHtml(note)) };
+        tracked.regions[conflict.key] = await this.updateNote(serverId, bundle, file, conflict.key, region.body, note, seen);
+      } else {
+        const markdown = await this.noteToMarkdown(noteHtml(note), file.path);
+        await this.app.vault.process(file, (text) => {
+          const r = noteLayout(text).regions.find((x) => x.key === conflict.key);
+          if (!r) return text;
+          const layout = noteLayout(text);
+          const replacement = layout.bare ? `${markdown.trim()}\n` : noteRegion(r.key, markdown);
+          return text.slice(0, r.start) + replacement + text.slice(r.end);
+        });
+        tracked.regions[conflict.key] = { version: note.version, hash: hash(markdown), html: hash(noteHtml(note)) };
+      }
+      this.reported.delete(`${conflict.key}@${conflict.note.version}`);
+      await this.saveState();
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -510,6 +798,10 @@ export class LiteratureNotes {
     } catch {
       return null;
     }
+    return this.importImageData(data, name);
+  }
+
+  private async importImageData(data: Buffer, name: string): Promise<TFile> {
     const folder = normalizePath(this.settings().imageFolder || this.settings().notesFolder || "/");
     await this.ensureFolder(folder);
     const path = normalizePath(`${folder}/${name}`);
@@ -525,8 +817,9 @@ export class LiteratureNotes {
   private async renderNotes(bundle: ItemBundle, sourcePath: string): Promise<RenderedNote[]> {
     const notes: RenderedNote[] = [];
     for (const n of bundle.notes) {
-      const markdown = await this.noteToMarkdown((n.data.note as string) || "", sourcePath);
-      notes.push({ key: n.key, version: n.version, markdown });
+      const html = (n.data.note as string) || "";
+      const markdown = await this.noteToMarkdown(html, sourcePath);
+      notes.push({ key: n.key, version: n.version, markdown, html });
     }
     return notes;
   }
@@ -553,6 +846,14 @@ export class LiteratureNotes {
         const path = await fetchAttachmentPath(attachmentKey);
         if (path) file = await this.importImage(path, `${attachmentKey}.${path.split(".").pop() || "png"}`);
       }
+      // An image sent from Obsidian that Zotero has not imported yet (it does when the note is opened)
+      const src = img.getAttribute("src") || "";
+      const inline = /^data:image\/(png|jpeg);base64,(.+)$/.exec(src);
+      if (!file && inline) {
+        const data = Buffer.from(inline[2], "base64");
+        const name = `${createHash("sha1").update(data).digest("hex").slice(0, 12)}.${inline[1] === "jpeg" ? "jpg" : "png"}`;
+        file = await this.importImageData(data, name);
+      }
       const annotation = parseDataAttribute<NoteAnnotation>(img, "data-annotation");
       if (!file && annotation?.annotationKey) {
         file = await this.importImage(this.annotationCachePath(annotation.annotationKey), `${annotation.annotationKey}.png`);
@@ -575,7 +876,7 @@ export class LiteratureNotes {
       const target = annotation?.attachmentURI && zoteroUriPath(annotation.attachmentURI);
       if (!target) continue;
       const a = doc.body.createEl("a");
-      a.setAttribute("href", annotationLink(target, annotation));
+      a.setAttribute("href", annotationLink(target, annotation, span.classList.contains("underline") ? "underline" : "highlight"));
       a.append(...Array.from(span.childNodes));
       span.replaceWith(a);
     }

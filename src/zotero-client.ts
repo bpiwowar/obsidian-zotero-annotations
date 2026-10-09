@@ -84,6 +84,8 @@ export interface ZoteroItemSummary {
 export interface ZoteroApiItem {
   key: string;
   version: number;
+  /** The library holding the item ("user" with the user ID, or "group") */
+  library?: { type: string; id: number };
   data: Record<string, unknown>;
 }
 

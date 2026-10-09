@@ -15,6 +15,7 @@ src/
   mention-index.ts     # Vault-wide index of notes linking to a Zotero item (cached on disk)
   paper-outline.ts     # Lays a note's Zotero links out along its heading structure
   literature-notes.ts  # One synced note per paper: create, update regions, incremental sync
+  note-html.ts         # Markdown → Zotero note HTML (write-back)
   note-format.ts       # Literature note text: file names (short title – KEY), header, zt-note regions / single-note layout
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
@@ -89,7 +90,18 @@ sidebar shows them and follows the open literature note); each `%%zt-note: KEY%%
 that is exactly one Zotero note has none, its key in the `zotero-note` property — `noteLayout`) and is
 refreshed only while its hash matches what was last written (local edits are kept; shift-click
 on the sidebar refresh overwrites them). Quotes and citations become `zotero://` links that carry
-everything needed to rebuild them for write-back (page, label, highlight rects, cited locator). State
+everything needed to rebuild them for write-back (page, label, highlight rects, cited locator). Edits go back to Zotero
+(`push`): a region whose text no longer has its recorded hash is converted by `note-html.ts`
+(`markdownToHtml`, the inverse of `noteToMarkdown`: quote links → `span.highlight`, `(…)` citation
+links → `span.citation`, image alt links → `img[data-annotation]`; images that are attachments of
+the note keep `data-attachment-key`, others go as PNG/JPEG data URLs that Zotero's note editor imports
+when the note is opened) and PATCHed with `If-Unmodified-Since-Version`, inside the wrapper `div` of
+the note it replaces. Whether Zotero changed a note is decided by the hash of its HTML (`RegionState.html`;
+Zotero bumps versions without changes); changed on both sides → `choose` modal (interactive push) or a
+one-time notice. Keyless regions, and the body of a paper without Zotero notes, become new Zotero notes.
+Pushes run on leaving the note, 30 s after the last edit, before each sync, and by command; a failed push
+is simply retried (the region hashes are the queue). Regions deleted in Obsidian are not deleted in Zotero.
+State
 (per-item region versions/hashes, descendant keys, server ID, library version) lives in
 `<plugin dir>/literature-notes.json`. Sync asks `items?since=<libraryVersion>&format=versions`
 and maps changed keys to tracked papers through their descendants (two parent hops for new
