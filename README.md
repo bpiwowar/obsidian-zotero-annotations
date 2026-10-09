@@ -2,7 +2,7 @@
 
 An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar when your cursor is on a `zotero://select/library/items/ITEMKEY` link.
 
-![The cursor on a Zotero link in a note: the sidebar shows the paper, its abstract, the notes mentioning it and its Zotero notes](screenshots/zotero-link.png)
+![The cursor on a Zotero link in a project note: the sidebar shows the paper, the two notes mentioning it, and its annotations in their highlight colours, grouped by page](screenshots/zotero-link.png)
 
 *With the cursor on a Zotero link, the sidebar shows the paper: its abstract, the notes that mention it, and its Zotero notes and annotations.*
 
@@ -10,10 +10,21 @@ An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar 
 
 *With a literature note open, the sidebar shows that paper's annotations, grouped by page. The note itself holds the paper's Zotero note, where quotes and citations link back to the PDF.*
 
+![The Papers list of a project note: six papers grouped under the note's headings, each with its authors, year and line number](screenshots/papers.png)
+
+*The **Papers** button lists the papers a note cites, along its headings. Click one to see its annotations.*
+
+<img src="screenshots/mobile.png" width="300" align="right" alt="On a phone: the sidebar shows a paper from the copy kept in its literature note, marked Offline copy">
+
+*On a phone or tablet, tapping a Zotero link opens the sidebar too, from the copy of the annotations kept in the paper's literature note.*
+
+<br clear="right">
+
 ## Features
 
 - **Automatic sidebar**: Place your cursor on a Zotero link (or inside a markdown link `[text](zotero://...)`) and the sidebar opens with that paper's annotations
-- **Click interception**: Clicking a `zotero://select/` link opens the sidebar instead of switching to Zotero
+- **Click interception**: Clicking a `zotero://select/` link opens the sidebar instead of switching to Zotero (double-click to open it in Zotero)
+- **Papers in a note**: the **Papers** button lists the papers cited in the current note, grouped under its headings
 - **Paper metadata**: Title, authors, date, and collapsible abstract
 - **Notes**: Zotero notes are displayed (expanded by default) with embedded images
 - **Annotations**: Highlights, comments, and tags grouped by page, with colored sidebar matching the annotation color
@@ -26,7 +37,7 @@ An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar 
 
 ## Requirements
 
-- Obsidian desktop to talk to Zotero. On mobile (or when Zotero is not running), the sidebar shows the copy of the annotations kept in literature notes, and `zotero://` links open the paper's literature note — see below
+- Obsidian desktop to talk to Zotero. On mobile (or when Zotero is not running), the sidebar shows the copy of the annotations kept in literature notes — see below
 - **Zotero 7+** running locally (Zotero 10+ to send literature note edits back to Zotero)
 - Zotero's local API enabled: **Settings → Advanced → "Allow other applications on this computer to communicate with Zotero"**
 
@@ -83,7 +94,7 @@ A Zotero child note, as Markdown
 
 ### On mobile
 
-Zotero only runs on a computer, so on a phone or tablet the plugin works from the vault: the sidebar shows the offline copy of the paper's literature note (only papers with a literature note), the "Mentioned in" section and the Papers list work as on desktop, and tapping a `zotero://` link opens the paper's literature note (when there is none, the link opens as before). Nothing is sent to Zotero from mobile; edits made there are sent by the computer once the notes are synced to it.
+Zotero only runs on a computer, so on a phone or tablet the plugin works from the vault: the sidebar shows the offline copy of the paper's literature note (only papers with a literature note), the "Mentioned in" section and the Papers list work as on desktop, and tapping a `zotero://select` link shows the paper in the sidebar, as on desktop (its **Note** button opens the literature note). Nothing is sent to Zotero from mobile; edits made there are sent by the computer once the notes are synced to it.
 
 ## Network use and files outside the vault
 
