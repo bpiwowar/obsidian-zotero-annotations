@@ -5,6 +5,7 @@ import {
   ZoteroWriter,
   fetchAnnotations,
   fetchItemInfo,
+  isNotFound,
   fetchItemSummary,
   fetchLibraryState,
   isZoteroRunning,
@@ -130,13 +131,9 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     this.registerMentionIndexEvents();
 
     // Without a Zotero to talk to (mobile), the sidebar shows the copy kept in
-    // literature notes, links open these notes, and nothing is synced
-    if (Platform.isDesktop) {
-      this.addSettingTab(new ZoteroAnnotationsSettingTab(this.app, this));
-      this.interceptLinksToSidebar();
-    } else {
-      this.interceptLinksToLiteratureNotes();
-    }
+    // literature notes, and nothing is synced
+    this.addSettingTab(new ZoteroAnnotationsSettingTab(this.app, this));
+    this.interceptLinksToSidebar();
 
     // Register the sidebar view
     this.registerView(VIEW_TYPE_ZOTERO_ANNOTATIONS, (leaf) => {
@@ -350,8 +347,9 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   }
 
   /**
-   * Desktop: a click on a zotero://select link shows the paper in the sidebar
-   * (after a short delay to detect double-clicks); a double click opens it in Zotero.
+   * A click on a zotero://select link shows the paper in the sidebar (after a
+   * short delay to detect double-clicks); a double click opens it in Zotero.
+   * On mobile, the sidebar shows the copy kept in the literature note.
    */
   private interceptLinksToSidebar(): void {
     // Save original window.open and patch it to intercept zotero://select/ links.
@@ -406,32 +404,6 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       evt.stopPropagation();
       openInZotero(href);
     });
-  }
-
-  /**
-   * Mobile: a zotero:// link opens the literature note of its paper (found by
-   * `zotero-key`, or by `zotero-pdf` for a PDF link) rather than Zotero. Links
-   * without a literature note, or to the note already open, open as before.
-   */
-  private interceptLinksToLiteratureNotes(): void {
-    const origOpen = window.open;
-    this.originalWindowOpen = origOpen;
-    // "Open in Zotero" (sidebar) still means Zotero
-    this.openInZotero = (url) => void origOpen.call(window, url);
-    window.open = (...args: Parameters<typeof window.open>) => {
-      const url = typeof args[0] === "string" ? args[0] : args[0]?.toString() || "";
-      const match = /^zotero:\/\/(select|open-pdf)\/library\/items\/([A-Z0-9]{8})/i.exec(url);
-      if (match) {
-        const key = match[2].toUpperCase();
-        const file =
-          match[1] === "select" ? this.literature.findNote(key) : this.literature.findNoteOfAttachment(key);
-        if (file && file !== this.app.workspace.getActiveFile()) {
-          void this.app.workspace.getLeaf(false).openFile(file);
-          return null;
-        }
-      }
-      return origOpen.apply(window, args);
-    };
   }
 
   /** (Re)starts the periodic check for changes in Zotero */
@@ -961,6 +933,13 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         view.setAnnotations(itemKey, info, annotations, force);
       }
     } catch (e) {
+      if (isNotFound(e)) {
+        view.showError(
+          `Item ${itemKey} is not in your Zotero library: deleted, merged into another item, or in a group library.`,
+          force
+        );
+        return;
+      }
       console.error("Zotero Annotations: error loading annotations", e);
       view.showError(`Failed to load annotations: ${(e as Error).message}`, force);
     }
@@ -1049,10 +1028,13 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
 
   getSettingDefinitions(): SettingDefinitionItem[] {
     const off = () => !this.plugin.settings.literatureNotes;
+    // Settings about talking to Zotero or writing notes from it: desktop only
+    const desktop = () => Platform.isDesktop && !off();
     return [
       {
         name: "Zotero data directory",
         desc: "Path to your Zotero data folder (used to load annotation images from cache)",
+        visible: () => Platform.isDesktop,
         control: {
           type: "text",
           key: "zoteroDataDir",
@@ -1081,7 +1063,7 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
           {
             name: "Create notes",
             desc: "When a literature note is created for a paper.",
-            visible: () => !off(),
+            visible: desktop,
             control: {
               type: "dropdown",
               key: "createMode",
@@ -1096,19 +1078,19 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
           {
             name: "Notes folder",
             desc: "Where new literature notes are created.",
-            visible: () => !off(),
+            visible: desktop,
             control: { type: "folder", key: "notesFolder", defaultValue: DEFAULT_SETTINGS.notesFolder },
           },
           {
             name: "Words of the title in note names",
             desc: "New notes are named \u201cShort title \u2013 KEY\u201d, keeping at most this many words of the title.",
-            visible: () => !off(),
+            visible: desktop,
             control: { type: "number", key: "titleMaxWords", min: 1, defaultValue: DEFAULT_SETTINGS.titleMaxWords },
           },
           {
             name: "Cut the title at",
             desc: "Note names keep the title up to the first of these characters (e.g. \u201c:\u201d drops subtitles). Empty: keep the whole title.",
-            visible: () => !off(),
+            visible: desktop,
             control: { type: "text", key: "titleCutAt", defaultValue: DEFAULT_SETTINGS.titleCutAt },
           },
           {
@@ -1120,7 +1102,7 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
           {
             name: "Check Zotero every (minutes)",
             desc: "0 checks only when Obsidian regains focus, or when a paper or its literature note is shown.",
-            visible: () => !off(),
+            visible: desktop,
             control: { type: "number", key: "syncInterval", min: 0, defaultValue: DEFAULT_SETTINGS.syncInterval },
           },
           {
@@ -1129,7 +1111,7 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
               "Note sections edited in Obsidian update their Zotero note when you leave the note, after 30 s " +
               "without typing, and on each check. Otherwise use \"Send literature note edits to Zotero\". " +
               "The first write asks for permission in Zotero (choose \"Always allow\").",
-            visible: () => !off(),
+            visible: desktop,
             control: { type: "toggle", key: "pushEdits", defaultValue: DEFAULT_SETTINGS.pushEdits },
           },
         ],
@@ -1145,8 +1127,9 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
     if (!(key in DEFAULT_SETTINGS)) return;
     (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
     await this.plugin.saveSettings();
-    if (key === "literatureNotes" || key === "syncInterval") this.plugin.restartSync();
     if (key === "literatureNotes") this.update();
+    if (!Platform.isDesktop) return;
+    if (key === "literatureNotes" || key === "syncInterval") this.plugin.restartSync();
     if ((key === "createMode" || key === "literatureNotes") && this.plugin.settings.createMode === "linked") {
       void this.plugin.createLinkedNotes();
     }

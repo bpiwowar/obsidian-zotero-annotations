@@ -128,10 +128,9 @@ base64 data URL never drops.
 ### Mobile
 
 Node modules (`fs`, `os`, `crypto`) are loaded lazily through `node.ts`, behind a `Platform.isDesktop`
-guard, so the bundle loads on mobile. There, `onload` skips everything that needs Zotero (settings tab,
-literature note commands and events, drop, sync) and `interceptLinksToLiteratureNotes` replaces the sidebar
-link interception: a `zotero://select` link opens the literature note with that `zotero-key`, an `open-pdf`
-link the one whose `zotero-pdf` names the attachment (`findNoteOfAttachment`); other links open as before.
+guard, so the bundle loads on mobile. There, `onload` skips everything that needs Zotero (literature note
+commands and events, drop, sync; the settings tab hides the settings about them). Links behave as on desktop (`interceptLinksToSidebar`):
+a `zotero://select` link shows the paper in the sidebar, its "Note" button opens the literature note.
 The sidebar, cursor detection, mentions and paper list work from the offline copy (below).
 `app.emulateMobile(true)` in the console runs this path on desktop.
 

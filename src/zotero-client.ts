@@ -17,6 +17,11 @@ function zoteroRequest(params: RequestUrlParam): Promise<RequestUrlResponse> {
   return requestUrl({ ...params, headers: { "Zotero-Allowed-Request": "true", ...params.headers } });
 }
 
+/** Whether a request failed because the item is not in the library (deleted, merged, or in a group) */
+export function isNotFound(e: unknown): boolean {
+  return (e as { status?: unknown } | null)?.status === 404;
+}
+
 async function zoteroFetch(url: string): Promise<unknown> {
   const res = await zoteroRequest({ url });
   return res.json;
@@ -155,7 +160,8 @@ export async function fetchItemSummary(key: string): Promise<ZoteroItemSummary |
       itemType,
     };
   } catch (e) {
-    console.error(`Zotero Annotations: failed to fetch item ${key}`, e);
+    if (isNotFound(e)) console.warn(`Zotero Annotations: item ${key} is not in the Zotero library`);
+    else console.error(`Zotero Annotations: failed to fetch item ${key}`, e);
     return null;
   }
 }
@@ -195,7 +201,8 @@ export async function fetchItemInfo(itemKey: string): Promise<ZoteroItemInfo | n
       related,
     };
   } catch (e) {
-    console.error("Zotero Annotations: failed to fetch item info", e);
+    if (isNotFound(e)) console.warn(`Zotero Annotations: item ${itemKey} is not in the Zotero library`);
+    else console.error("Zotero Annotations: failed to fetch item info", e);
     return null;
   }
 }
