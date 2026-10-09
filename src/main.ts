@@ -155,7 +155,11 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       view.zoteroDataDir = this.settings.zoteroDataDir;
       view.openExternal = openInZotero;
       view.onNavigate = (itemKey) => void this.loadAnnotations(itemKey, true);
-      view.mentionProvider = (itemKey) => this.mentions.getMentions(itemKey);
+      // The paper's own literature note links to it everywhere: not a mention
+      view.mentionProvider = async (itemKey) => {
+        const own = this.literature.findNote(itemKey)?.path;
+        return (await this.mentions.getMentions(itemKey)).filter((m) => m.path !== own);
+      };
       view.openMention = (mention) => void this.openMention(mention);
       view.onListPapers = () => void this.showPapersInActiveNote();
       view.literatureNotesEnabled = () => this.settings.literatureNotes;
