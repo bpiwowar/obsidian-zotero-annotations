@@ -55,7 +55,7 @@ import {
   annotationLink,
   citationLink,
 } from "./note-format";
-import { ImageRef, imageSources, markdownToHtml } from "./note-html";
+import { ImageRef, checkConversion, imageSources, markdownToHtml } from "./note-html";
 import { choose } from "./confirm-modal";
 
 export interface LiteratureNoteSettings {
@@ -175,6 +175,39 @@ class PushConflict extends Error {
   }
 }
 
+/** Raised when the conversion of a region to Zotero HTML fails its check: nothing is sent */
+class ConversionError extends Error {
+  constructor(readonly problems: string[], readonly markdown: string, readonly html: string) {
+    super(`the conversion to a Zotero note looks wrong (${problems.join("; ")})`);
+  }
+}
+
+/** Issues of the plugin, for conversion reports */
+const ISSUES_URL = "https://github.com/bpiwowar/obsidian-zotero-annotations/issues/new";
+
+/** A GitHub issue form, pre-filled with a conversion that failed its check (sent only if the user submits it) */
+function conversionIssueUrl(error: ConversionError, version: string): string {
+  const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}\n… (cut)` : text);
+  const body = [
+    `Plugin version: ${version}`,
+    "",
+    "Problems found before sending to Zotero:",
+    ...error.problems.map((p) => `- ${p}`),
+    "",
+    "Markdown (Obsidian):",
+    "````markdown",
+    cut(error.markdown, 2500),
+    "````",
+    "",
+    "Converted HTML (not sent):",
+    "````html",
+    cut(error.html.replace(/data:image\/[^"]+/g, "data:…"), 2500),
+    "````",
+  ].join("\n");
+  const title = `Conversion to a Zotero note: ${error.problems[0]}`;
+  return `${ISSUES_URL}?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+}
+
 /** A region edited on both sides */
 interface Conflict {
   key: string;
@@ -196,7 +229,9 @@ export class LiteratureNotes {
     private settings: () => LiteratureNoteSettings,
     /** Vault-relative path of the state file, or null to keep it in memory */
     private statePath: string | null,
-    private writer: ZoteroWriter
+    private writer: ZoteroWriter,
+    /** Plugin version, for problem reports */
+    private version: string
   ) {}
 
   // -------------------------------------------------------------------------
@@ -471,13 +506,23 @@ export class LiteratureNotes {
     const itemKey = this.keyOf(file);
     if (!itemKey) return;
     await this.loadState();
-    const { sent, conflicts } = await this.locked(itemKey, () => this.doPush(itemKey, file, interactive));
+    const { sent, conflicts, failures } = await this.locked(itemKey, () => this.doPush(itemKey, file, interactive));
     if (interactive) {
+      for (const failure of failures) await this.reportFailure(file, failure);
       for (const conflict of conflicts) await this.resolveConflict(itemKey, file, conflict);
-      if (conflicts.length === 0) {
+      if (conflicts.length === 0 && failures.length === 0) {
         new Notice(sent > 0 ? `${file.basename}: ${sent} note(s) sent to Zotero.` : `${file.basename}: no Zotero note to send.`);
       }
       return;
+    }
+    const unreported = failures.filter((f) => !this.reported.has(`conversion:${hash(f.markdown)}`));
+    for (const f of unreported) this.reported.add(`conversion:${hash(f.markdown)}`);
+    if (unreported.length > 0) {
+      new Notice(
+        `${file.basename}: ${unreported.length} note section(s) not sent to Zotero, the conversion looks wrong. ` +
+          'Use "Send literature note edits to Zotero" for details.',
+        10_000
+      );
     }
     const fresh = conflicts.filter((c) => !this.reported.has(`${c.key}@${c.note.version}`));
     for (const c of fresh) this.reported.add(`${c.key}@${c.note.version}`);
@@ -489,9 +534,14 @@ export class LiteratureNotes {
     }
   }
 
-  private async doPush(itemKey: string, file: TFile, all: boolean): Promise<{ sent: number; conflicts: Conflict[] }> {
+  private async doPush(
+    itemKey: string,
+    file: TFile,
+    all: boolean
+  ): Promise<{ sent: number; conflicts: Conflict[]; failures: ConversionError[] }> {
+    const none = { sent: 0, conflicts: [], failures: [] };
     const tracked = this.state.items[itemKey];
-    if (!tracked || tracked.path !== file.path) return { sent: 0, conflicts: [] };
+    if (!tracked || tracked.path !== file.path) return none;
     const text = await this.app.vault.read(file);
     const layout = noteLayout(text);
     const edited = layout.regions.filter(
@@ -500,42 +550,49 @@ export class LiteratureNotes {
     // The body of a paper that never had Zotero notes becomes one
     const body = text.slice(layout.contentStart).trim();
     const newBody = layout.regions.length === 0 && Object.keys(tracked.regions).length === 0 ? body : "";
-    if (edited.length === 0 && !newBody) return { sent: 0, conflicts: [] };
+    if (edited.length === 0 && !newBody) return none;
 
     const bundle = await this.fetchBundle(itemKey);
-    if (!bundle) return { sent: 0, conflicts: [] };
+    if (!bundle) return none;
     const { serverId } = await fetchLibraryState();
     const notes = new Map(bundle.notes.map((n) => [n.key, n]));
     const conflicts: Conflict[] = [];
+    const failures: ConversionError[] = [];
     const created: { key: string; body: string }[] = [];
     let sent = 0;
 
     for (const region of edited) {
-      if (!region.key) {
-        const { key, state } = await this.createNote(serverId, bundle, file, region.body);
-        created.push({ key, body: region.body });
-        tracked.regions[key] = state;
-        continue;
-      }
-      const note = notes.get(region.key);
-      // Deleted in Zotero: the text stays in Obsidian only
-      if (!note) continue;
-      const prev = tracked.regions[region.key];
       try {
+        if (!region.key) {
+          const { key, state } = await this.createNote(serverId, bundle, file, region.body);
+          created.push({ key, body: region.body });
+          tracked.regions[key] = state;
+          continue;
+        }
+        const note = notes.get(region.key);
+        // Deleted in Zotero: the text stays in Obsidian only
+        if (!note) continue;
+        const prev = tracked.regions[region.key];
         if (!zoteroUnchanged(prev, { version: note.version, html: noteHtml(note) })) throw new PushConflict(note);
         tracked.regions[region.key] = await this.updateNote(serverId, bundle, file, region.key, region.body, note, prev);
         sent++;
       } catch (e) {
-        if (!(e instanceof PushConflict)) throw e;
-        conflicts.push({ key: region.key, body: region.body, note: e.note });
+        if (e instanceof PushConflict && region.key) conflicts.push({ key: region.key, body: region.body, note: e.note });
+        else if (e instanceof ConversionError) failures.push(e);
+        else throw e;
       }
     }
 
     let single: string | null = null;
     if (newBody) {
-      const { key, state } = await this.createNote(serverId, bundle, file, newBody);
-      tracked.regions[key] = state;
-      single = key;
+      try {
+        const { key, state } = await this.createNote(serverId, bundle, file, newBody);
+        tracked.regions[key] = state;
+        single = key;
+      } catch (e) {
+        if (!(e instanceof ConversionError)) throw e;
+        failures.push(e);
+      }
     }
     // Name the new notes in the file
     if (created.length > 0) {
@@ -557,7 +614,7 @@ export class LiteratureNotes {
     const newKeys = [...created.map((c) => c.key), ...(single ? [single] : [])];
     tracked.descendants.push(...newKeys);
     await this.saveState();
-    return { sent: sent + newKeys.length, conflicts };
+    return { sent: sent + newKeys.length, conflicts, failures };
   }
 
   /** Replaces a Zotero note by a region of the file; its new sync state */
@@ -634,7 +691,25 @@ export class LiteratureNotes {
       const data = await this.app.vault.readBinary(file);
       images.set(src, { dataUrl: `data:${type};base64,${arrayBufferToBase64(data)}` });
     }
-    return markdownToHtml(body, { uri, images, paper: uri(`library/items/${bundle.item.key}`) });
+    const html = markdownToHtml(body, { uri, images, paper: uri(`library/items/${bundle.item.key}`) });
+    // Nothing is sent when text or links would be lost
+    const problems = checkConversion(body, html, { images });
+    if (problems.length > 0) throw new ConversionError(problems, body, html);
+    return html;
+  }
+
+  /** Explains a section that was not sent, offering to report it */
+  private async reportFailure(file: TFile, failure: ConversionError): Promise<void> {
+    const choice = await choose(
+      this.app,
+      "Not sent to Zotero",
+      `A note section of "${file.basename}" was not sent: its conversion to a Zotero note looks wrong ` +
+        `(${failure.problems.join("; ")}). The note is unchanged in Zotero.\n\n` +
+        "You can report it: a GitHub issue form opens with the section and its conversion " +
+        "(check it before submitting, it contains the text of your note).",
+      ["Report on GitHub", "Close"]
+    );
+    if (choice === 0) window.open(conversionIssueUrl(failure, this.version));
   }
 
   /** Asks which side wins for a region changed in Obsidian and in Zotero */

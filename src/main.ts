@@ -111,7 +111,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
           this.settings.zoteroApiKey = key ?? "";
           await this.saveSettings();
         }
-      )
+      ),
+      this.manifest.version
     );
 
     // Index of vault notes linking to Zotero items. The vault scan is lazy

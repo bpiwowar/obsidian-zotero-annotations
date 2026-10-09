@@ -409,3 +409,49 @@ function parseLink(text: string, start: number): { label: string; dest: string; 
   if (!m) return null;
   return { label, dest: m[1] ?? m[2], end: i + 2 + m[0].length };
 }
+
+/** Words (letters and digits), lowercased, with their counts */
+function wordCounts(text: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const w of text.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []) counts.set(w, (counts.get(w) || 0) + 1);
+  return counts;
+}
+
+/**
+ * Checks a conversion before it is sent, independently of the converter:
+ * every word of the Markdown's visible text must be in the HTML, and the
+ * HTML must have as many links, quotes, citations and images as the
+ * Markdown. Returns what is wrong (empty when the conversion looks right).
+ */
+export function checkConversion(md: string, html: string, ctx: Pick<HtmlContext, "images">): string[] {
+  const problems: string[] = [];
+
+  // Code (fenced, inline) holds no links
+  const noCode = md.replace(/^ *(`{3,}|~{3,})[^\n]*\n[\s\S]*?^ *\1 *$/gm, "").replace(/`[^`\n]*`/g, "");
+  // Images count when they can be sent (others stay as text)
+  const DEST = /\]\((?:<([^>]*)>|([^\s()]*(?:\([^\s()]*\)[^\s()]*)*))\)/g;
+  const embeds = [...noCode.matchAll(/!\[\[([^\]|#]+)/g)].filter((m) => ctx.images.has(m[1].trim())).length;
+  const images = [...noCode.matchAll(/!\[[^\]]*\]\((?:<([^>]*)>|([^\s()]*))\)/g)];
+  const sentImages = images.filter((m) => ctx.images.has(decodeImageSource(m[1] ?? m[2]))).length;
+  const expectedLinks = (noCode.match(DEST) || []).length - images.length + sentImages + embeds;
+  const links = (html.match(/<a\s|<span class="(?:highlight|underline|citation)"|<img\s/g) || []).length;
+  if (links !== expectedLinks) problems.push(`${expectedLinks} links or images in Obsidian, ${links} in the converted note`);
+
+  // Visible text of the Markdown: link labels without destinations, no image syntax
+  const visible = md
+    .replace(/^ *(?:[-*+]|\d{1,9}[.)]) +/gm, "")
+    .replace(/!\[\[[^\]]*\]\]/g, " ")
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+    .replace(/!\[[^\]]*\]\((?:<[^>]*>|[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/g, " ")
+    .replace(/\]\((?:<[^>]*>|[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/g, "] ");
+  const text = html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
+  const have = wordCounts(text);
+  const missing = [...wordCounts(visible)].filter(([w, n]) => (have.get(w) || 0) < n).map(([w]) => w);
+  if (missing.length > 0) problems.push(`words lost: ${missing.slice(0, 8).join(", ")}${missing.length > 8 ? "…" : ""}`);
+  return problems;
+}
