@@ -1,4 +1,4 @@
-import { Plugin, PluginSettingTab, SettingDefinitionItem, App, Notice, TAbstractFile, TFile, debounce } from "obsidian";
+import { Platform, Plugin, PluginSettingTab, SettingDefinitionItem, App, Notice, TAbstractFile, TFile, debounce, setIcon } from "obsidian";
 import { AnnotationView, VIEW_TYPE_ZOTERO_ANNOTATIONS } from "./annotation-view";
 import { createCursorDetectorPlugin, extractZoteroKey } from "./cursor-detector";
 import {
@@ -15,7 +15,8 @@ import { LiteratureNotes } from "./literature-notes";
 import { ANNOTATION_DRAG_TYPE, AnnotationDrag, annotationMarkdown } from "./note-format";
 import { EditorView } from "@codemirror/view";
 import { confirm } from "./confirm-modal";
-import { homedir } from "os";
+import { CACHE_LANGUAGE, parseCache, readOnlyCache } from "./annotation-cache";
+import { os } from "./node";
 
 /** When literature notes get created */
 type CreateMode = "manual" | "cursor" | "linked";
@@ -42,7 +43,7 @@ interface ZoteroAnnotationsSettings {
 }
 
 const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
-  zoteroDataDir: `${homedir()}/Zotero`,
+  zoteroDataDir: Platform.isDesktop ? `${os().homedir()}/Zotero` : "",
   literatureNotes: false,
   createMode: "manual",
   notesFolder: "Zotero",
@@ -95,7 +96,6 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
-    this.addSettingTab(new ZoteroAnnotationsSettingTab(this.app, this));
 
     this.literature = new LiteratureNotes(
       this.app,
@@ -121,8 +121,200 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       this.app,
       this.manifest.dir ? `${this.manifest.dir}/mention-index.json` : null
     );
+
     this.registerMentionIndexEvents();
 
+    // Without a Zotero to talk to (mobile), the sidebar shows the copy kept in
+    // literature notes, links open these notes, and nothing is synced
+    if (Platform.isDesktop) {
+      this.addSettingTab(new ZoteroAnnotationsSettingTab(this.app, this));
+      this.interceptLinksToSidebar();
+    } else {
+      this.interceptLinksToLiteratureNotes();
+    }
+
+    // Register the sidebar view
+    this.registerView(VIEW_TYPE_ZOTERO_ANNOTATIONS, (leaf) => {
+      const view = new AnnotationView(leaf);
+      view.zoteroDataDir = this.settings.zoteroDataDir;
+      // Zotero's rendering when on this computer, else the copy in the vault
+      const zoteroImage = view.imageSource;
+      view.imageSource = async (key) => {
+        const src = Platform.isDesktop ? await zoteroImage(key) : null;
+        if (src) return src;
+        const copy = this.app.vault.getAbstractFileByPath(this.literature.annotationImagePath(key));
+        return copy instanceof TFile ? this.app.vault.getResourcePath(copy) : null;
+      };
+      view.openExternal = (url) => this.openInZotero(url);
+      view.onNavigate = (itemKey) => void this.loadAnnotations(itemKey, true);
+      // The paper's own literature note links to it everywhere: not a mention
+      view.mentionProvider = async (itemKey) => {
+        const own = this.literature.findNote(itemKey)?.path;
+        return (await this.mentions.getMentions(itemKey)).filter((m) => m.path !== own);
+      };
+      view.openMention = (mention) => void this.openMention(mention);
+      view.onListPapers = () => void this.showPapersInActiveNote();
+      view.literatureNotesEnabled = () => this.settings.literatureNotes;
+      view.isEditingLiteratureNote = (itemKey) => this.activeNoteKey() === itemKey;
+      view.openLiteratureNote = (itemKey) => void this.openLiteratureNote(itemKey);
+      view.onRefresh = (itemKey, overwrite) => void this.refreshItem(itemKey, overwrite);
+      return view;
+    });
+
+    // The annotation cache at the end of literature notes: one line, read-only
+    this.registerMarkdownCodeBlockProcessor(CACHE_LANGUAGE, (source, el) => {
+      const cache = parseCache(source);
+      const line = el.createDiv({ cls: "zotero-annot-cache-summary" });
+      setIcon(line.createSpan(), "archive");
+      const count = cache?.annotations.length ?? 0;
+      line.appendText(
+        cache
+          ? `${count} Zotero annotation${count === 1 ? "" : "s"}, copy of ${new Date(cache.cached).toLocaleDateString()}`
+          : "Copy of Zotero annotations (unreadable)"
+      );
+      line.setAttribute("title", "Kept to show the annotations sidebar when Zotero cannot be reached");
+    });
+    this.registerEditorExtension(readOnlyCache);
+
+    // Register the CM6 extension for cursor detection and dblclick handling
+    this.registerEditorExtension(
+      createCursorDetectorPlugin({
+        onChange: (itemKey) => this.onItemKeyChanged(itemKey),
+        onDoubleClick: (itemKey) => this.handleDoubleClick(itemKey),
+      })
+    );
+
+    this.addCommand({
+      id: "toggle-annotations-sidebar",
+      name: "Toggle annotations sidebar",
+      callback: () => void this.toggleSidebar(),
+    });
+
+    this.addCommand({
+      id: "toggle-freeze",
+      name: "Pin/unpin annotations sidebar",
+      callback: () => {
+        const view = this.getView();
+        if (view) view.toggleFreeze();
+      },
+    });
+
+    this.addCommand({
+      id: "list-papers-in-note",
+      name: "List Zotero papers in current note",
+      callback: () => void this.showPapersInActiveNote(),
+    });
+
+    this.addCommand({
+      id: "rescan-mentions",
+      name: "Rescan vault for Zotero mentions",
+      callback: () => {
+        void this.mentions.rebuild();
+      },
+    });
+
+    // Literature notes are written from Zotero
+    if (Platform.isDesktop) {
+      this.addCommand({
+        id: "open-literature-note",
+        name: "Open literature note of the paper in the sidebar",
+        checkCallback: (checking) => {
+          const key = this.getView()?.getCurrentItemKey();
+          if (!this.settings.literatureNotes || !key) return false;
+          if (!checking) void this.openLiteratureNote(key);
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "refresh-literature-note",
+        name: "Refresh literature note from Zotero",
+        checkCallback: (checking) => {
+          const file = this.app.workspace.getActiveFile();
+          if (!this.settings.literatureNotes || !file || !this.literature.keyOf(file)) return false;
+          if (!checking) {
+            void this.refreshLiteratureNote(file);
+          }
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "push-literature-note",
+        name: "Send literature note edits to Zotero",
+        checkCallback: (checking) => {
+          const file = this.app.workspace.getActiveFile();
+          if (!this.settings.literatureNotes || !file || !this.literature.keyOf(file)) return false;
+          if (!checking) void this.pushLiteratureNote(file, true);
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "sync-literature-notes",
+        name: "Sync literature notes with Zotero",
+        checkCallback: (checking) => {
+          if (!this.settings.literatureNotes) return false;
+          if (!checking) {
+            void this.literature.sync().catch((e: Error) => new Notice(`Could not sync with Zotero: ${e.message}`));
+          }
+          return true;
+        },
+      });
+    }
+
+    this.addCommand({
+      id: "refresh-annotations",
+      name: "Refresh current annotations",
+      callback: () => {
+        const view = this.getView();
+        if (view) {
+          const key = view.getCurrentItemKey();
+          if (key) {
+            this.cache.delete(key);
+            this.summaries.delete(key);
+            void this.loadAnnotations(key);
+          }
+        }
+      },
+    });
+
+    // Runs right away when the layout is already ready (e.g. on plugin reload),
+    // so it must come after everything it uses has been set up
+    this.app.workspace.onLayoutReady(() => {
+      this.removeDuplicateViews();
+      this.registerEvent(this.app.workspace.on("layout-change", () => this.removeDuplicateViews()));
+      this.registerFollowNoteEvents();
+      if (Platform.isDesktop) {
+        this.registerLiteratureNoteEvents();
+        this.registerAnnotationDrop();
+        this.restartSync();
+      }
+    });
+  }
+
+  onunload(): void {
+    if (this.debounceTimer) {
+      window.clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    for (const timer of this.pendingClickTimers.values()) {
+      window.clearTimeout(timer);
+    }
+    this.pendingClickTimers.clear();
+    if (this.originalWindowOpen) {
+      window.open = this.originalWindowOpen;
+      this.originalWindowOpen = null;
+    }
+    this.mentions.unload();
+    if (this.syncTimer !== null) window.clearInterval(this.syncTimer);
+  }
+
+  /**
+   * Desktop: a click on a zotero://select link shows the paper in the sidebar
+   * (after a short delay to detect double-clicks); a double click opens it in Zotero.
+   */
+  private interceptLinksToSidebar(): void {
     // Save original window.open and patch it to intercept zotero://select/ links.
     // A single click opens the sidebar (after a short delay to detect double-clicks);
     // a double click cancels the pending sidebar update and opens the item in Zotero.
@@ -175,154 +367,32 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       evt.stopPropagation();
       openInZotero(href);
     });
-
-    // Register the sidebar view
-    this.registerView(VIEW_TYPE_ZOTERO_ANNOTATIONS, (leaf) => {
-      const view = new AnnotationView(leaf);
-      view.zoteroDataDir = this.settings.zoteroDataDir;
-      view.openExternal = openInZotero;
-      view.onNavigate = (itemKey) => void this.loadAnnotations(itemKey, true);
-      // The paper's own literature note links to it everywhere: not a mention
-      view.mentionProvider = async (itemKey) => {
-        const own = this.literature.findNote(itemKey)?.path;
-        return (await this.mentions.getMentions(itemKey)).filter((m) => m.path !== own);
-      };
-      view.openMention = (mention) => void this.openMention(mention);
-      view.onListPapers = () => void this.showPapersInActiveNote();
-      view.literatureNotesEnabled = () => this.settings.literatureNotes;
-      view.isEditingLiteratureNote = (itemKey) => this.activeNoteKey() === itemKey;
-      view.openLiteratureNote = (itemKey) => void this.openLiteratureNote(itemKey);
-      view.onRefresh = (itemKey, overwrite) => void this.refreshItem(itemKey, overwrite);
-      return view;
-    });
-
-    // Register the CM6 extension for cursor detection and dblclick handling
-    this.registerEditorExtension(
-      createCursorDetectorPlugin({
-        onChange: (itemKey) => this.onItemKeyChanged(itemKey),
-        onDoubleClick: (itemKey) => this.handleDoubleClick(itemKey),
-      })
-    );
-
-    this.addCommand({
-      id: "toggle-annotations-sidebar",
-      name: "Toggle annotations sidebar",
-      callback: () => void this.toggleSidebar(),
-    });
-
-    this.addCommand({
-      id: "toggle-freeze",
-      name: "Pin/unpin annotations sidebar",
-      callback: () => {
-        const view = this.getView();
-        if (view) view.toggleFreeze();
-      },
-    });
-
-    this.addCommand({
-      id: "list-papers-in-note",
-      name: "List Zotero papers in current note",
-      callback: () => void this.showPapersInActiveNote(),
-    });
-
-    this.addCommand({
-      id: "rescan-mentions",
-      name: "Rescan vault for Zotero mentions",
-      callback: () => {
-        void this.mentions.rebuild();
-      },
-    });
-
-    this.addCommand({
-      id: "open-literature-note",
-      name: "Open literature note of the paper in the sidebar",
-      checkCallback: (checking) => {
-        const key = this.getView()?.getCurrentItemKey();
-        if (!this.settings.literatureNotes || !key) return false;
-        if (!checking) void this.openLiteratureNote(key);
-        return true;
-      },
-    });
-
-    this.addCommand({
-      id: "refresh-literature-note",
-      name: "Refresh literature note from Zotero",
-      checkCallback: (checking) => {
-        const file = this.app.workspace.getActiveFile();
-        if (!this.settings.literatureNotes || !file || !this.literature.keyOf(file)) return false;
-        if (!checking) {
-          void this.refreshLiteratureNote(file);
-        }
-        return true;
-      },
-    });
-
-    this.addCommand({
-      id: "push-literature-note",
-      name: "Send literature note edits to Zotero",
-      checkCallback: (checking) => {
-        const file = this.app.workspace.getActiveFile();
-        if (!this.settings.literatureNotes || !file || !this.literature.keyOf(file)) return false;
-        if (!checking) void this.pushLiteratureNote(file, true);
-        return true;
-      },
-    });
-
-    this.addCommand({
-      id: "sync-literature-notes",
-      name: "Sync literature notes with Zotero",
-      checkCallback: (checking) => {
-        if (!this.settings.literatureNotes) return false;
-        if (!checking) {
-          void this.literature.sync().catch((e: Error) => new Notice(`Could not sync with Zotero: ${e.message}`));
-        }
-        return true;
-      },
-    });
-
-    this.addCommand({
-      id: "refresh-annotations",
-      name: "Refresh current annotations",
-      callback: () => {
-        const view = this.getView();
-        if (view) {
-          const key = view.getCurrentItemKey();
-          if (key) {
-            this.cache.delete(key);
-            this.summaries.delete(key);
-            void this.loadAnnotations(key);
-          }
-        }
-      },
-    });
-
-    // Runs right away when the layout is already ready (e.g. on plugin reload),
-    // so it must come after everything it uses has been set up
-    this.app.workspace.onLayoutReady(() => {
-      this.removeDuplicateViews();
-      this.registerEvent(this.app.workspace.on("layout-change", () => this.removeDuplicateViews()));
-      this.registerLiteratureNoteEvents();
-      this.registerFollowNoteEvents();
-      this.registerAnnotationDrop();
-      this.restartSync();
-    });
   }
 
-  onunload(): void {
-    if (this.debounceTimer) {
-      window.clearTimeout(this.debounceTimer);
-      this.debounceTimer = null;
-    }
-    for (const timer of this.pendingClickTimers.values()) {
-      window.clearTimeout(timer);
-    }
-    this.pendingClickTimers.clear();
-    if (this.originalWindowOpen) {
-      window.open = this.originalWindowOpen;
-      this.originalWindowOpen = null;
-    }
-    this.mentions.unload();
-    if (this.syncTimer !== null) window.clearInterval(this.syncTimer);
+  /**
+   * Mobile: a zotero:// link opens the literature note of its paper (found by
+   * `zotero-key`, or by `zotero-pdf` for a PDF link) rather than Zotero. Links
+   * without a literature note, or to the note already open, open as before.
+   */
+  private interceptLinksToLiteratureNotes(): void {
+    const origOpen = window.open;
+    this.originalWindowOpen = origOpen;
+    // "Open in Zotero" (sidebar) still means Zotero
+    this.openInZotero = (url) => void origOpen.call(window, url);
+    window.open = (...args: Parameters<typeof window.open>) => {
+      const url = typeof args[0] === "string" ? args[0] : args[0]?.toString() || "";
+      const match = /^zotero:\/\/(select|open-pdf)\/library\/items\/([A-Z0-9]{8})/i.exec(url);
+      if (match) {
+        const key = match[2].toUpperCase();
+        const file =
+          match[1] === "select" ? this.literature.findNote(key) : this.literature.findNoteOfAttachment(key);
+        if (file && file !== this.app.workspace.getActiveFile()) {
+          void this.app.workspace.getLeaf(false).openFile(file);
+          return null;
+        }
+      }
+      return origOpen.apply(window, args);
+    };
   }
 
   /** (Re)starts the periodic check for changes in Zotero */
@@ -692,7 +762,12 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   private async resolveSummary(key: string): Promise<PaperInfo | null> {
     const cached = this.summaries.get(key);
     if (cached !== undefined) return cached;
-    const summary = await fetchItemSummary(key);
+    let summary: PaperInfo | null = Platform.isDesktop ? await fetchItemSummary(key) : null;
+    if (!summary) {
+      // Zotero not reachable: the copy kept in the literature note
+      const info = (await this.literature.cachedPaper(key))?.info;
+      if (info) summary = { key: info.key, title: info.title, creators: info.creators, year: /\b(\d{4})\b/.exec(info.date)?.[1] || "" };
+    }
     this.summaries.set(key, summary);
     return summary;
   }
@@ -766,9 +841,17 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
     view.showLoading(itemKey, force);
 
-    const running = await isZoteroRunning();
+    const running = Platform.isDesktop && (await isZoteroRunning());
     if (!running) {
-      view.showError("Cannot reach Zotero. Make sure Zotero is running and the local API is enabled in Settings \u2192 Advanced.", force);
+      // The copy kept in the paper's literature note
+      const copy = await this.literature.cachedPaper(itemKey);
+      if (copy) {
+        view.setAnnotations(itemKey, copy.info, copy.annotations, force, copy.cached);
+      } else if (Platform.isDesktop) {
+        view.showError("Cannot reach Zotero. Make sure Zotero is running and the local API is enabled in Settings \u2192 Advanced.", force);
+      } else {
+        view.showError("No copy of this paper on this device: it is kept in literature notes, written on the computer running Zotero.", force);
+      }
       return;
     }
 

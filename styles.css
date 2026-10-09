@@ -99,6 +99,20 @@
   color: var(--text-faint);
 }
 
+.view-content .zotero-annot-offline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-warning);
+}
+
+.view-content .zotero-annot-offline svg {
+  width: 12px;
+  height: 12px;
+}
+
 .view-content .zotero-annot-count {
   padding: 6px 12px;
   font-size: 11px;
@@ -556,4 +570,18 @@
 
 .view-content .zotero-annot-paper-open:hover {
   color: var(--text-accent);
+}
+
+/* Annotation cache block at the end of literature notes: a one-line summary */
+.zotero-annot-cache-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.zotero-annot-cache-summary svg {
+  width: 14px;
+  height: 14px;
 }

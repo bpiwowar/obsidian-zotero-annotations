@@ -23,11 +23,12 @@
  * sent to Zotero ({@link LiteratureNotes.push}) while the Zotero note is
  * still what was last seen (tracked by hash of its HTML: Zotero bumps
  * versions without changes). When both changed, the user chooses.
- * Annotations are not copied into notes: the sidebar shows them.
+ * Annotations are not part of the note: the sidebar shows them. A read-only
+ * copy of what it shows sits in a block at the end of the note, for when
+ * Zotero cannot be reached (see `annotation-cache.ts`).
  */
 import { App, Notice, TFile, arrayBufferToBase64, htmlToMarkdown, normalizePath } from "obsidian";
-import { createHash } from "crypto";
-import { readFile } from "fs/promises";
+import { crypto, fs } from "./node";
 import {
   ZoteroApiItem,
   ZoteroConflictError,
@@ -38,7 +39,10 @@ import {
   fetchItem,
   fetchItems,
   fetchLibraryState,
+  fetchAnnotations,
+  fetchItemInfo,
 } from "./zotero-client";
+import { AnnotationCache, formatCache, parseCache, sameCache, splitCache, withCache } from "./annotation-cache";
 import {
   ShortTitleOptions,
   attachmentReaderLink,
@@ -106,7 +110,7 @@ interface SyncState {
 
 
 function hash(text: string): string {
-  return createHash("sha1").update(text.trim()).digest("hex");
+  return crypto().createHash("sha1").update(text.trim()).digest("hex");
 }
 
 /** A URI-encoded JSON attribute of Zotero note HTML (`data-annotation`, `data-citation`) */
@@ -251,6 +255,16 @@ export class LiteratureNotes {
     return null;
   }
 
+  /** The literature note whose `zotero-pdf` link opens attachment `attachmentKey` */
+  findNoteOfAttachment(attachmentKey: string): TFile | null {
+    const re = new RegExp(`/items/${attachmentKey}(?![A-Z0-9])`, "i");
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const pdf: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.["zotero-pdf"];
+      if (typeof pdf === "string" && re.test(pdf) && this.keyOf(file)) return file;
+    }
+    return null;
+  }
+
   /** The Zotero item key of a literature note, or null for other notes */
   keyOf(file: TFile): string | null {
     const key: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.["zotero-key"];
@@ -334,7 +348,7 @@ export class LiteratureNotes {
     const single = notes.length === 1 ? notes[0].key : null;
     const body = single ? `${notes[0].markdown.trim()}\n` : notes.map((n) => noteRegion(n.key, n.markdown)).join("\n\n");
 
-    const file = await this.app.vault.create(path, body);
+    const file = await this.app.vault.create(path, withCache(body, await this.cacheJson(itemKey)));
     await this.writeFrontmatter(file, bundle, single);
     await this.track(itemKey, file, bundle, notes);
     return file;
@@ -344,6 +358,7 @@ export class LiteratureNotes {
     const bundle = await this.fetchBundle(itemKey);
     if (!bundle) return;
     const notes = await this.renderNotes(bundle, file.path);
+    const cache = await this.cacheJson(itemKey);
     const tracked = this.state.items[itemKey];
     const known = tracked?.regions || {};
     const kept: string[] = [];
@@ -351,7 +366,8 @@ export class LiteratureNotes {
 
     // The Zotero note held without markers (see `noteLayout`), if any
     let single: string | null = null;
-    await this.app.vault.process(file, (text) => {
+    // The body, rewritten
+    const rewrite = (text: string): string => {
       const layout = noteLayout(text);
       const { regions } = layout;
       const byKey = new Map(regions.filter((r) => r.key).map((r) => [r.key as string, r]));
@@ -421,6 +437,12 @@ export class LiteratureNotes {
       edits.sort((a, b) => b.start - a.start);
       for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
       return out.replace(/\n{4,}/g, "\n\n\n");
+    };
+    await this.app.vault.process(file, (full) => {
+      // The cache block is rewritten apart (only when its data changed)
+      const { text, json } = splitCache(full);
+      const block = cache === null || (json !== null && sameCache(json, cache)) ? json : cache;
+      return withCache(rewrite(text), block);
     });
 
     await this.writeFrontmatter(file, bundle, single);
@@ -548,7 +570,7 @@ export class LiteratureNotes {
       (r) => !r.key || (tracked.regions[r.key] && (all || hash(r.body) !== tracked.regions[r.key].hash))
     );
     // The body of a paper that never had Zotero notes becomes one
-    const body = text.slice(layout.contentStart).trim();
+    const body = text.slice(layout.contentStart, layout.contentEnd).trim();
     const newBody = layout.regions.length === 0 && Object.keys(tracked.regions).length === 0 ? body : "";
     if (edited.length === 0 && !newBody) return none;
 
@@ -861,6 +883,38 @@ export class LiteratureNotes {
     return { item, attachments, notes, filePaths };
   }
 
+  /**
+   * The JSON of the annotation cache block of an item (see `annotation-cache.ts`),
+   * its image annotations copied into the image folder; null when Zotero fails.
+   */
+  private async cacheJson(itemKey: string): Promise<string | null> {
+    try {
+      const [info, annotations] = await Promise.all([fetchItemInfo(itemKey), fetchAnnotations(itemKey)]);
+      if (!info) return null;
+      for (const a of annotations) {
+        if (a.type === "image") await this.importImage(this.annotationCachePath(a.key), `${a.key}.png`);
+      }
+      return formatCache(info, annotations);
+    } catch (e) {
+      console.warn(`Zotero Annotations: could not cache the annotations of ${itemKey}`, e);
+      return null;
+    }
+  }
+
+  /** The annotation cache of the literature note of an item (or of the item of an attachment), if any */
+  async cachedPaper(key: string): Promise<AnnotationCache | null> {
+    const file = this.findNote(key) ?? this.findNoteOfAttachment(key);
+    if (!file) return null;
+    const { json } = splitCache(await this.app.vault.cachedRead(file));
+    return json === null ? null : parseCache(json);
+  }
+
+  /** Vault path of the copy of an annotation image (it may not exist) */
+  annotationImagePath(annotationKey: string): string {
+    const folder = normalizePath(this.settings().imageFolder || this.settings().notesFolder || "/");
+    return normalizePath(`${folder}/${annotationKey}.png`);
+  }
+
   private annotationCachePath(annotationKey: string): string {
     return `${this.settings().zoteroDataDir}/cache/library/${annotationKey}.png`;
   }
@@ -869,7 +923,7 @@ export class LiteratureNotes {
   async importImage(source: string, name: string): Promise<TFile | null> {
     let data: Buffer;
     try {
-      data = await readFile(source);
+      data = await fs().readFile(source);
     } catch {
       return null;
     }
@@ -926,7 +980,7 @@ export class LiteratureNotes {
       const inline = /^data:image\/(png|jpeg);base64,(.+)$/.exec(src);
       if (!file && inline) {
         const data = Buffer.from(inline[2], "base64");
-        const name = `${createHash("sha1").update(data).digest("hex").slice(0, 12)}.${inline[1] === "jpeg" ? "jpg" : "png"}`;
+        const name = `${crypto().createHash("sha1").update(data).digest("hex").slice(0, 12)}.${inline[1] === "jpeg" ? "jpg" : "png"}`;
         file = await this.importImageData(data, name);
       }
       const annotation = parseDataAttribute<NoteAnnotation>(img, "data-annotation");

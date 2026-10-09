@@ -10,12 +10,14 @@ An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar 
 src/
   main.ts              # Plugin entry point, glues everything together
   zotero-client.ts     # HTTP client for Zotero local API (localhost:23119)
+  annotation-cache.ts  # Offline copy of the sidebar data, in a block at the end of literature notes
   annotation-view.ts   # Sidebar ItemView — renders annotations, freeze/pin toggle
   cursor-detector.ts   # CodeMirror 6 ViewPlugin — detects cursor on zotero:// links
   mention-index.ts     # Vault-wide index of notes linking to a Zotero item (cached on disk)
   paper-outline.ts     # Lays a note's Zotero links out along its heading structure
   literature-notes.ts  # One synced note per paper: create, update regions, incremental sync
   note-html.ts         # Markdown → Zotero note HTML (write-back)
+  node.ts              # Lazy, desktop-only loaders of Node modules (fs, os, crypto)
   note-format.ts       # Literature note text: file names (short title – KEY), header, zt-note regions / single-note layout
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
@@ -120,6 +122,27 @@ notes name them) and inserts `![library/items/ATT?page=…&annotation=KEY…|300
 the alt text of the image holds the annotation link minus `zotero://open-pdf/` (a full URL shows as a link) (`annotationImage`; literature notes write annotation images
 of Zotero notes the same way, with Zotero's width). The card's `<img>` is `draggable=false` so its
 base64 data URL never drops.
+
+### Mobile
+
+Node modules (`fs`, `os`, `crypto`) are loaded lazily through `node.ts`, behind a `Platform.isDesktop`
+guard, so the bundle loads on mobile. There, `onload` skips everything that needs Zotero (settings tab,
+literature note commands and events, drop, sync) and `interceptLinksToLiteratureNotes` replaces the sidebar
+link interception: a `zotero://select` link opens the literature note with that `zotero-key`, an `open-pdf`
+link the one whose `zotero-pdf` names the attachment (`findNoteOfAttachment`); other links open as before.
+The sidebar, cursor detection, mentions and paper list work from the offline copy (below).
+`app.emulateMobile(true)` in the console runs this path on desktop.
+
+### Offline copy
+
+`annotation-cache.ts`: a literature note ends with a ```` ```zotero-annotations ```` block, the JSON of what the
+sidebar shows (`ZoteroItemInfo` without notes + `ZoteroAnnotation[]`, one annotation per line; `zotero://` and
+backticks escaped so the mention index and the fence are safe). `refresh`/`create` write it (`cacheJson`, which
+also copies image annotations to the image folder as `KEY.png`; rewritten only when the data changed,
+`sameCache`); `noteLayout` ends the body before it (`contentEnd`), so region hashes and pushes never see it.
+A code block processor shows it as one line, `readOnlyCache` (CM6 change filter) drops user edits in it.
+`loadAnnotations` falls back to it (`cachedPaper`) when Zotero is not reachable, the view marks it "Offline copy";
+`resolveSummary` too; images come from the vault copy (`view.imageSource`).
 
 ### Freeze/Pin
 

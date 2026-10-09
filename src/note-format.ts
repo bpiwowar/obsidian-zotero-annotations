@@ -4,6 +4,7 @@
  */
 import { getFrontMatterInfo, parseYaml } from "obsidian";
 import { ZoteroAnnotation, ZoteroApiItem } from "./zotero-client";
+import { splitCache } from "./annotation-cache";
 
 /** How note names shorten titles */
 export interface ShortTitleOptions {
@@ -296,17 +297,22 @@ export interface NoteLayout {
   bare: boolean;
   /** Offset of the text after the frontmatter */
   contentStart: number;
+  /** Offset of the end of the body: the annotation cache block, if any, comes after */
+  contentEnd: number;
 }
 
 /**
  * Reads the Zotero notes of a literature note. Markers are only needed for
  * several notes: a note mirroring a single Zotero note is the body itself,
- * its key in the `zotero-note` property.
+ * its key in the `zotero-note` property. The annotation cache block at the
+ * end (see `annotation-cache.ts`) is not part of the body.
  */
-export function noteLayout(text: string): NoteLayout {
+export function noteLayout(full: string): NoteLayout {
+  const text = splitCache(full).text;
   const info = getFrontMatterInfo(text);
+  const contentEnd = text.length;
   const regions = parseRegions(text);
-  if (regions.length > 0) return { regions, bare: false, contentStart: info.contentStart };
+  if (regions.length > 0) return { regions, bare: false, contentStart: info.contentStart, contentEnd };
   let key: unknown = null;
   try {
     const fm = info.exists ? (parseYaml(info.frontmatter) as Record<string, unknown> | null) : null;
@@ -316,11 +322,12 @@ export function noteLayout(text: string): NoteLayout {
   }
   const body = text.slice(info.contentStart);
   if (typeof key !== "string" || !/^[A-Z0-9]{8}$/.test(key) || !body.trim()) {
-    return { regions: [], bare: false, contentStart: info.contentStart };
+    return { regions: [], bare: false, contentStart: info.contentStart, contentEnd };
   }
   return {
-    regions: [{ key, body: body.trim(), start: info.contentStart, end: text.length }],
+    regions: [{ key, body: body.trim(), start: info.contentStart, end: contentEnd }],
     bare: true,
     contentStart: info.contentStart,
+    contentEnd,
   };
 }

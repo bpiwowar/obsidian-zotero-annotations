@@ -10,14 +10,13 @@ import { ZoteroAnnotation, ZoteroItemInfo, ZoteroItemSummary } from "./zotero-cl
 import { Mention } from "./mention-index";
 import { OutlineSection, countPapers } from "./paper-outline";
 import { ANNOTATION_DRAG_TYPE, AnnotationDrag, annotationMarkdown } from "./note-format";
-import { readFile, stat } from "fs/promises";
+import { fs } from "./node";
 
 export const VIEW_TYPE_ZOTERO_ANNOTATIONS = "zotero-annotations-view";
 
 async function readFileAsBase64(path: string): Promise<string | null> {
   try {
-    await stat(path);
-    const buffer = await readFile(path);
+    const buffer = await fs().readFile(path);
     return buffer.toString("base64");
   } catch {
     return null;
@@ -97,6 +96,8 @@ export class AnnotationView extends ItemView {
   private currentItemKey: string | null = null;
   private itemInfo: ZoteroItemInfo | null = null;
   private annotations: ZoteroAnnotation[] = [];
+  /** When the item shown was cached, if it comes from the offline copy (see `annotation-cache.ts`) */
+  private cachedAt: string | null = null;
   /** Incremented on every render, so async section fills can detect being stale */
   private renderToken = 0;
   /** Elements of the Mentions section of the current render, for in-place refresh */
@@ -115,6 +116,11 @@ export class AnnotationView extends ItemView {
   onListPapers: () => void = () => undefined;
   /** Path to the Zotero data directory */
   zoteroDataDir = "";
+  /** `src` of the image of an image annotation (Zotero's rendering by default), null when missing */
+  imageSource: (annotationKey: string) => Promise<string | null> = async (key) => {
+    const base64 = await readFileAsBase64(this.getAnnotationImagePath(key));
+    return base64 ? `data:image/png;base64,${base64}` : null;
+  };
   /** Whether literature notes are turned on (shows the toolbar button) */
   literatureNotesEnabled: () => boolean = () => false;
   /** True while the note being edited is the literature note of the item (its notes are in it) */
@@ -222,7 +228,9 @@ export class AnnotationView extends ItemView {
     itemKey: string,
     itemInfo: ZoteroItemInfo | null,
     annotations: ZoteroAnnotation[],
-    force = false
+    force = false,
+    /** Set when shown from the offline copy: when it was cached */
+    cachedAt: string | null = null
   ): void {
     if (this.holds(force)) return;
     this.mode = "item";
@@ -230,6 +238,7 @@ export class AnnotationView extends ItemView {
     this.currentItemKey = itemKey;
     this.itemInfo = itemInfo;
     this.annotations = annotations;
+    this.cachedAt = cachedAt;
     void this.render();
   }
 
@@ -240,6 +249,7 @@ export class AnnotationView extends ItemView {
     this.currentItemKey = itemKey;
     this.itemInfo = null;
     this.annotations = [];
+    this.cachedAt = null;
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     this.renderToolbar(container);
@@ -256,6 +266,7 @@ export class AnnotationView extends ItemView {
     this.currentItemKey = null;
     this.itemInfo = null;
     this.annotations = [];
+    this.cachedAt = null;
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     this.renderToolbar(container);
@@ -546,10 +557,8 @@ export class AnnotationView extends ItemView {
         ) as { annotationKey?: string } | null;
         const annotKey = annotation?.annotationKey;
         if (annotKey) {
-          const base64 = await readFileAsBase64(this.getAnnotationImagePath(annotKey));
-          if (base64) {
-            img.setAttribute("src", `data:image/png;base64,${base64}`);
-          }
+          const src = await this.imageSource(annotKey);
+          if (src) img.setAttribute("src", src);
         }
       } catch {
         // ignore malformed annotation data
@@ -658,6 +667,12 @@ export class AnnotationView extends ItemView {
             text: this.itemInfo.date,
           });
         }
+        if (this.cachedAt) {
+          const offline = header.createDiv({ cls: "zotero-annot-offline" });
+          setIcon(offline.createSpan(), "cloud-off");
+          offline.appendText(` Offline copy, ${new Date(this.cachedAt).toLocaleString()}`);
+          offline.setAttribute("title", "Zotero cannot be reached: this is the copy kept in the literature note");
+        }
 
         // Abstract with toggle (collapsed by default)
         if (this.itemInfo.abstractNote) {
@@ -764,12 +779,12 @@ export class AnnotationView extends ItemView {
       // Image annotation from cache
       if (annot.type === "image") {
         const imgContainer = card.createDiv({ cls: "zotero-annot-image-container" });
-        const base64 = await readFileAsBase64(this.getAnnotationImagePath(annot.key));
-        if (base64) {
+        const src = await this.imageSource(annot.key);
+        if (src) {
           imgContainer.createEl("img", {
             cls: "zotero-annot-image",
             // Dragging takes the whole card (see dragstart), not this data URL
-            attr: { src: `data:image/png;base64,${base64}`, draggable: "false" },
+            attr: { src, draggable: "false" },
           });
         } else {
           const placeholder = imgContainer.createDiv({ cls: "zotero-annot-image-placeholder" });

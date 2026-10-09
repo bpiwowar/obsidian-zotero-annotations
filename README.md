@@ -26,7 +26,7 @@ An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar 
 
 ## Requirements
 
-- Obsidian desktop (the plugin is desktop-only)
+- Obsidian desktop to talk to Zotero. On mobile (or when Zotero is not running), the sidebar shows the copy of the annotations kept in literature notes, and `zotero://` links open the paper's literature note — see below
 - **Zotero 7+** running locally (Zotero 10+ to send literature note edits back to Zotero)
 - Zotero's local API enabled: **Settings → Advanced → "Allow other applications on this computer to communicate with Zotero"**
 
@@ -85,12 +85,17 @@ A Zotero child note, as Markdown
 - **Properties**: title, citation key and links are properties, refreshed from Zotero: `zotero` selects the paper in Zotero (in its own literature note, clicking it opens Zotero rather than the sidebar), `zotero-pdf` opens the PDF in Zotero's reader, `pdf` opens the file itself. The body holds only your text and the Zotero notes.
 - **Your edits are safe**: text outside the `zt-note` sections is never touched (a note holding a single Zotero note has no such text: the whole body is the note). A note or `zt-note` section you edited in Obsidian is not overwritten: it is sent to Zotero (when you leave the note, after 30 s without typing, or with "Send literature note edits to Zotero"; the first time, Zotero asks for permission — choose "Always allow"). If the note changed in Zotero too, you choose which version to keep. A new `%%zt-note%%` section (without key), or the text of a note for a paper without Zotero notes, becomes a new Zotero note. Images go along (PNG and JPEG; Zotero imports them when the note is opened in Zotero). Deleting a `zt-note` section (or emptying a single-note body) keeps it out of the note. Holding exactly one Zotero note and nothing else, a note drops its markers.
 - **Images** inside Zotero notes are copied to the image folder.
+- **Offline copy**: a literature note ends with a `zotero-annotations` block holding what the sidebar shows (paper details and annotations, as JSON; image annotations are copied to the image folder). It is shown as a single line ("12 Zotero annotations, copy of …") and cannot be edited in Obsidian. When Zotero cannot be reached — on your phone, or with Zotero closed — the sidebar shows this copy, marked "Offline copy". It is updated with the note, when the annotations change in Zotero.
+
+### On mobile
+
+Zotero only runs on a computer, so on a phone or tablet the plugin works from the vault: the sidebar shows the offline copy of the paper's literature note (only papers with a literature note), the "Mentioned in" section and the Papers list work as on desktop, and tapping a `zotero://` link opens the paper's literature note (when there is none, the link opens as before). Nothing is sent to Zotero from mobile; edits made there are sent by the computer once the notes are synced to it.
 
 ## Network use and files outside the vault
 
 - **Network**: the plugin only talks to Zotero running on your own computer, through its local API (`http://localhost:23119`). Nothing is sent to any remote server, and there is no telemetry.
 - **GitHub**: when a note cannot be converted safely for Zotero, the plugin offers to open a pre-filled GitHub issue in your browser. That issue contains the note's text; it is only submitted if you click "Submit" on GitHub yourself.
-- **Files outside the vault** (read-only, through Node's `fs`): Zotero's local API serves neither the images of area annotations nor the files of images embedded in notes, so the plugin reads them in Zotero's data directory (set in the plugin settings, `~/Zotero` by default): annotation images in `cache/library/`, note images in `storage/` (at the path the API gives). They are shown in the sidebar, and copied into the vault when you drag an annotation into a note or a literature note includes one. The plugin never writes outside the vault.
+- **Files outside the vault** (read-only, through Node's `fs`): Zotero's local API serves neither the images of area annotations nor the files of images embedded in notes, so the plugin reads them in Zotero's data directory (set in the plugin settings, `~/Zotero` by default): annotation images in `cache/library/`, note images in `storage/` (at the path the API gives). They are shown in the sidebar, and copied into the vault when you drag an annotation into a note, or for literature notes (images in their Zotero notes, and every image annotation for the offline copy). The plugin never writes outside the vault.
 - **Vault notes**: to list the notes that mention a paper ("Mentioned in"), the plugin reads the Markdown notes of the vault, looking for `zotero://` links. The index is kept in the plugin's folder (`mention-index.json`) and never leaves your computer.
 
 ## Installation
