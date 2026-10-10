@@ -136,6 +136,8 @@ export class AnnotationView extends ItemView {
   /** Re-fetches the item from Zotero (and its literature note, if any) */
   /** `overwrite`: shift-click, the literature note is replaced by Zotero's version */
   onRefresh: (itemKey: string, overwrite: boolean) => void = () => undefined;
+  /** Looks for the item that replaced a deleted or merged one, and repairs the links (null: not available) */
+  onRecover: ((itemKey: string) => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf) {
     super(leaf);
@@ -281,16 +283,29 @@ export class AnnotationView extends ItemView {
     });
   }
 
-  showError(message: string, force = false): void {
+  /** `recoverKey`: the item is missing from Zotero, offer to find what replaced it */
+  showError(message: string, force = false, recoverKey: string | null = null): void {
     if (this.holds(force)) return;
     this.mode = "item";
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     this.renderToolbar(container);
-    container.createDiv({
+    const error = container.createDiv({
       cls: "zotero-annot-error",
       text: message,
     });
+    if (recoverKey) this.recoverButton(error.createDiv(), recoverKey);
+  }
+
+  private recoverButton(parent: HTMLElement, itemKey: string): void {
+    const recover = this.onRecover;
+    if (!recover) return;
+    const btn = parent.createEl("button", {
+      cls: "zotero-annot-recover-btn",
+      text: "Find the current item",
+      attr: { "aria-label": "Find the item that replaced this one, after a merge for instance, and update the links to it" },
+    });
+    btn.addEventListener("click", () => recover(itemKey));
   }
 
   /** Shows the papers of a note, grouped by its headings. */
@@ -665,6 +680,12 @@ export class AnnotationView extends ItemView {
             cls: "zotero-annot-date",
             text: this.itemInfo.date,
           });
+        }
+        if (this.itemInfo.trashed && this.currentItemKey) {
+          const trashed = header.createDiv({ cls: "zotero-annot-offline" });
+          setIcon(trashed.createSpan(), "trash-2");
+          trashed.appendText(" In the Zotero trash (merged into another item?)");
+          this.recoverButton(header, this.currentItemKey);
         }
         if (this.cachedAt) {
           const offline = header.createDiv({ cls: "zotero-annot-offline" });

@@ -34,6 +34,7 @@ An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar 
 - **Caching**: Annotations are cached in memory to avoid repeated API calls
 - **Literature notes** (optional): one note per paper holding its Zotero notes, kept in sync with Zotero in both directions — see below
 - **Drag and drop**: drag an annotation from the sidebar into a note to quote it with a link back to the PDF
+- **Dead links repaired**: a link to an item merged into another (or deleted) can be pointed at the item that replaced it — see below
 
 ## Requirements
 
@@ -100,6 +101,10 @@ A Zotero child note, as Markdown
 - **Images** inside Zotero notes are copied to the image folder.
 - **Offline copy**: a literature note ends with a `zotero-annotations` block holding what the sidebar shows (paper details and annotations, as JSON; image annotations are copied to the image folder). It is shown as a single line ("12 Zotero annotations, copy of …") and cannot be edited in Obsidian. When Zotero cannot be reached — on your phone, or with Zotero closed — the sidebar shows this copy, marked "Offline copy". It is updated with the note, when the annotations change in Zotero.
 
+### Merged or deleted items
+
+When Zotero merges duplicates, it keeps one item and moves the others to the trash, so links to them stop working. For such a link, the sidebar shows **Find the current item** (also for an item in the trash); the "Repair links to deleted or merged Zotero items" commands check every link of the current note, or of the whole vault. Items merged in Zotero (Zotero records which item was kept) are relinked right away: every link to the old item in the vault points at the item kept, and its literature note moves to it (`zotero-key`, name). A report lists what was done, followed by the items Zotero has no record for: for each, the notes linking to it, and a search of your library — from its title and from the text of its links, e.g. "(Formal et al., 2022)" — where you pick the item its links should point at (an item with the same title comes first). Nothing is changed for these before you choose.
+
 ### On mobile
 
 Zotero only runs on a computer, so on a phone or tablet the plugin works from the vault: the sidebar shows the offline copy of the paper's literature note (only papers with a literature note), the "Mentioned in" section and the Papers list work as on desktop, and tapping a `zotero://select` link shows the paper in the sidebar, as on desktop (its **Note** button opens the literature note). Nothing is sent to Zotero from mobile; edits made there are sent by the computer once the notes are synced to it.
@@ -150,6 +155,8 @@ You can also set the `OBSIDIAN_PLUGIN_DIR` environment variable instead of using
 | Refresh all literature notes from Zotero | Re-reads every literature note from Zotero, changed or not (sections edited in Obsidian are kept); also adds the offline copy to older notes |
 | Send all literature note edits to Zotero | Sends the edited sections of every literature note to Zotero, asking when a note changed on both sides |
 | Sync all literature notes with Zotero | Sends all edits, then refreshes all literature notes |
+| Repair links to deleted or merged Zotero items in current note | Points the note's links to items no longer in Zotero (merged, deleted) at the items that replaced them, in the whole vault |
+| Repair links to deleted or merged Zotero items in all notes | The same for every Zotero link of the vault |
 
 ## Known limitations
 

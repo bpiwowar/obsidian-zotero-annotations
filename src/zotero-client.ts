@@ -68,6 +68,8 @@ export interface ZoteroItemInfo {
   notes: ZoteroNote[];
   /** Items linked through Zotero's "Related" field */
   related: ZoteroItemSummary[];
+  /** In Zotero's trash (e.g. merged into another item) */
+  trashed?: boolean;
 }
 
 export interface ZoteroNote {
@@ -117,12 +119,12 @@ function shortCreators(data: Record<string, unknown>): string {
 
 /**
  * Extract item keys from a Zotero `relations` object. Values of `dc:relation`
- * are URIs like `http://zotero.org/users/12345/items/ABCD1234` and may be a
+ * (or of another `predicate`, e.g. `dc:replaces`) are URIs like `http://zotero.org/users/12345/items/ABCD1234` and may be a
  * single string rather than an array.
  */
-export function extractRelatedKeys(relations: unknown): string[] {
+export function extractRelatedKeys(relations: unknown, predicate = "dc:relation"): string[] {
   if (!relations || typeof relations !== "object") return [];
-  const raw = (relations as Record<string, unknown>)["dc:relation"];
+  const raw = (relations as Record<string, unknown>)[predicate];
   const uris = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
   const keys: string[] = [];
   for (const uri of uris) {
@@ -151,19 +153,23 @@ export async function fetchItemSummary(key: string): Promise<ZoteroItemSummary |
       return await fetchItemSummary(d.parentItem);
     }
     if (NON_PAPER_TYPES.has(itemType)) return null;
-    const date = (d.date as string) || "";
-    return {
-      key: item.key,
-      title: (d.title as string) || "(untitled)",
-      creators: shortCreators(d),
-      year: /\b(\d{4})\b/.exec(date)?.[1] || "",
-      itemType,
-    };
+    return summarize(item);
   } catch (e) {
     if (isNotFound(e)) console.warn(`Zotero Annotations: item ${key} is not in the Zotero library`);
     else console.error(`Zotero Annotations: failed to fetch item ${key}`, e);
     return null;
   }
+}
+
+function summarize(item: ZoteroApiItem): ZoteroItemSummary {
+  const d = item.data;
+  return {
+    key: item.key,
+    title: (d.title as string) || "(untitled)",
+    creators: shortCreators(d),
+    year: /\b(\d{4})\b/.exec((d.date as string) || "")?.[1] || "",
+    itemType: (d.itemType as string) || "",
+  };
 }
 
 async function fetchRelatedItems(keys: string[]): Promise<ZoteroItemSummary[]> {
@@ -199,6 +205,7 @@ export async function fetchItemInfo(itemKey: string): Promise<ZoteroItemInfo | n
       abstractNote: (d.abstractNote as string) || "",
       notes,
       related,
+      trashed: !!d.deleted,
     };
   } catch (e) {
     if (isNotFound(e)) console.warn(`Zotero Annotations: item ${itemKey} is not in the Zotero library`);
@@ -349,6 +356,28 @@ export async function fetchItems(keys: string[]): Promise<ZoteroApiItem[]> {
     result.push(...items);
   }
   return result;
+}
+
+/** Top-level items (not in the trash) matching a quick search (title, creators, year) */
+export async function searchItems(query: string, limit = 25): Promise<ZoteroApiItem[]> {
+  return (await zoteroFetch(`${ZOTERO_BASE}/items/top?q=${encodeURIComponent(query)}&limit=${limit}`)) as ZoteroApiItem[];
+}
+
+/** Papers (not in the trash) matching a quick search, as summaries */
+export async function searchItemSummaries(query: string, limit = 25): Promise<ZoteroItemSummary[]> {
+  return (await searchItems(query, limit)).filter((i) => !i.data.deleted).map(summarize);
+}
+
+/** Items per page of {@link scanTopItems} */
+const SCAN_PAGE = 100;
+
+/** Every top-level item (not in the trash), page by page; `visit` returns true to stop */
+export async function scanTopItems(visit: (item: ZoteroApiItem) => boolean): Promise<void> {
+  for (let start = 0; ; start += SCAN_PAGE) {
+    const page = (await zoteroFetch(`${ZOTERO_BASE}/items/top?limit=${SCAN_PAGE}&start=${start}`)) as ZoteroApiItem[];
+    for (const item of page) if (visit(item)) return;
+    if (page.length < SCAN_PAGE) return;
+  }
 }
 
 export interface ZoteroCollection {

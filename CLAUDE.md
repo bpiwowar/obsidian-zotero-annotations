@@ -18,6 +18,8 @@ src/
   literature-notes.ts  # One synced note per paper: create, update regions, incremental sync
   note-html.ts         # Markdown → Zotero note HTML (write-back)
   node.ts              # Lazy, desktop-only loaders of Node modules (fs, os, crypto)
+  item-recovery.ts     # Dead item keys (trashed/deleted) → the item that replaced them (merge record, else title)
+  repair-modal.ts      # Report of a link repair; search to relink the items Zotero has no merge record for
   note-format.ts       # Literature note text: file names (short title – KEY), header, zt-note regions / single-note layout
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
@@ -127,6 +129,20 @@ asking; changed on both sides they are merged three ways (`mergeSets`), on refre
 their type (automatic tags). Authors kept from Zotero keep
 their two-field split; new names are parsed ("Last, First", else the last word is the last name). Other creators are
 kept after the authors.
+
+### Merged and deleted items
+
+`item-recovery.ts`: Zotero merges duplicates by trashing all but one item, the item kept listing the others in
+`relations["dc:replaces"]`. `deadItem` tells a key that is trashed (`data.deleted`, still served by `/items/KEY`) or
+gone (404); `deadItems` checks keys 50 per request (`itemKey=` leaves out trashed items, so missing keys are then asked
+one by one). `findReplacement` searches the title (`/items/top?q=`) for an item that replaces it, else scans the whole
+library once (cached 5 min) for the merge record — both certain — else guesses an item with the same title (DOI, then
+year, break ties). `main.ts` (`recoverItems`) relinks the certain ones (`relink`: the `zotero://select` links of every
+note mentioning the key; `LiteratureNotes.rekey`: the literature note's `zotero-key`, `zotero`, the key in its name, its
+sync state) and opens `RepairModal` (`repair-modal.ts`): a report of what was relinked, then each other item with its
+mentions and a library search from its title and its link texts (`linkTexts`: "(Doe et al., 2020, p. 3)" → "Doe et al
+2020"), the guess first; "Use this item" relinks. Triggered from the sidebar (404 error, or the "In the Zotero trash"
+line of a trashed item) and by the "Repair links…" commands (select links of the note, or every key of the mention index).
 
 ### Drag and drop
 

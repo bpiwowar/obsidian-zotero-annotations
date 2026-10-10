@@ -9,6 +9,7 @@ import {
   fetchItemSummary,
   fetchLibraryState,
   isZoteroRunning,
+  searchItemSummaries,
 } from "./zotero-client";
 import { Mention, MentionIndex } from "./mention-index";
 import { PaperHit, PaperInfo, buildPaperOutline } from "./paper-outline";
@@ -18,6 +19,8 @@ import { EditorView } from "@codemirror/view";
 import { confirm } from "./confirm-modal";
 import { CACHE_LANGUAGE, parseCache, readOnlyCache } from "./annotation-cache";
 import { os } from "./node";
+import { DeadItem, deadItem, deadItems, findReplacement, linkTexts } from "./item-recovery";
+import { RelinkedItem, RepairEntry, RepairModal } from "./repair-modal";
 
 /** When literature notes get created */
 type CreateMode = "manual" | "cursor" | "linked";
@@ -59,6 +62,9 @@ const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
 
 
 const DOUBLE_CLICK_MS = 300;
+
+/** `zotero://select` links of a note (group 2: the item key) */
+const SELECT_LINK_RE = /zotero:\/\/select\/(library|groups\/\d+)\/items\/([A-Z0-9]{8})(?![A-Z0-9])/g;
 
 /** Showing a paper asks Zotero whether anything changed at most this often */
 const PAPER_CHECK_MS = 10_000;
@@ -160,6 +166,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       view.isEditingLiteratureNote = (itemKey) => this.activeNoteKey() === itemKey;
       view.openLiteratureNote = (itemKey) => void this.openLiteratureNote(itemKey);
       view.onRefresh = (itemKey, overwrite) => void this.refreshItem(itemKey, overwrite);
+      view.onRecover = Platform.isDesktop ? (itemKey) => void this.recoverItem(itemKey) : null;
       return view;
     });
 
@@ -206,6 +213,25 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       name: "List Zotero papers in current note",
       callback: () => void this.showPapersInActiveNote(),
     });
+
+    if (Platform.isDesktop) {
+      this.addCommand({
+        id: "repair-links-in-note",
+        name: "Repair links to deleted or merged Zotero items in current note",
+        checkCallback: (checking) => {
+          const file = this.app.workspace.getActiveFile();
+          if (!file || file.extension !== "md") return false;
+          if (!checking) void this.repairLinksInNote(file);
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "repair-links-in-vault",
+        name: "Repair links to deleted or merged Zotero items in all notes",
+        callback: () => void this.repairLinksInVault(),
+      });
+    }
 
     this.addCommand({
       id: "rescan-mentions",
@@ -817,6 +843,111 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     return summary;
   }
 
+  /**
+   * Repairs the links of a note pointing at items deleted from Zotero or in
+   * its trash (merged duplicates): see {@link recoverItem}.
+   */
+  private async repairLinksInNote(file: TFile): Promise<void> {
+    const text = await this.app.vault.read(file);
+    const keys = new Set(Array.from(text.matchAll(SELECT_LINK_RE), (m) => m[2]));
+    const own = this.literature.keyOf(file);
+    if (own) keys.add(own);
+    await this.repairLinks([...keys], file.basename);
+  }
+
+  /** Repairs the links of every note of the vault (see {@link repairLinksInNote}) */
+  private async repairLinksInVault(): Promise<void> {
+    await this.repairLinks(await this.mentions.getKeys(), "Vault");
+  }
+
+  /** Relinks the dead items among `keys` (Zotero links of `where`) */
+  private async repairLinks(keys: string[], where: string): Promise<void> {
+    const notice = new Notice(`Checking ${keys.length} Zotero item(s)\u2026`, 0);
+    try {
+      const dead = await deadItems(keys);
+      if (dead.length === 0) {
+        new Notice(`${where}: every Zotero link is fine.`);
+        return;
+      }
+      await this.recoverItems(dead, (item) => notice.setMessage(`Looking for the item that replaced ${item.key}\u2026`));
+    } catch (e) {
+      new Notice(`Could not check the links with Zotero: ${(e as Error).message}`);
+    } finally {
+      notice.hide();
+    }
+  }
+
+  /** Sidebar: repairs the links of one item no longer in the library */
+  private async recoverItem(key: string): Promise<void> {
+    try {
+      const dead = await deadItem(key);
+      if (!dead) {
+        new Notice(`Item ${key} is in your Zotero library: nothing to repair.`);
+        return;
+      }
+      await this.recoverItems([dead]);
+    } catch (e) {
+      new Notice(`Could not look for the item in Zotero: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * Points the links of dead items at the items Zotero merged them into, and
+   * reports in a modal: the items relinked, then the others (no merge record)
+   * to review, with a search to pick their item by hand.
+   */
+  private async recoverItems(dead: DeadItem[], onItem?: (item: DeadItem) => void): Promise<void> {
+    const relinked: RelinkedItem[] = [];
+    const review: RepairEntry[] = [];
+    for (const item of dead) {
+      onItem?.(item);
+      const title = item.title ?? (await this.literature.knownTitle(item.key));
+      const found = await findReplacement(item, title);
+      if (found?.certain) {
+        const notes = await this.relink(item.key, found.key);
+        relinked.push({ dead: item, title, key: found.key, newTitle: found.title, notes });
+      } else {
+        const mentions = await this.mentions.getMentions(item.key);
+        const texts = linkTexts(
+          mentions.map((m) => m.text),
+          item.key
+        );
+        review.push({ dead: item, title, guess: found?.key ?? null, mentions, texts });
+      }
+    }
+    new RepairModal(this.app, relinked, review, {
+      search: (query) => searchItemSummaries(query),
+      relink: (oldKey, newKey) => this.relink(oldKey, newKey),
+      openMention: (mention) => void this.openMention(mention),
+      showInZotero: (key) => this.openInZotero(`zotero://select/library/items/${key}`),
+    }).open();
+  }
+
+  /** Points the vault's links (and the literature note) of item `oldKey` at `newKey`; returns the number of notes changed */
+  private async relink(oldKey: string, newKey: string): Promise<number> {
+    const moved = this.settings.literatureNotes ? await this.literature.rekey(oldKey, newKey) : null;
+    const re = new RegExp(`(zotero://select/(?:library|groups/\\d+)/items/)${oldKey}(?![A-Z0-9])`, "g");
+    const paths = new Set((await this.mentions.getMentions(oldKey)).map((m) => m.path));
+    let changed = moved ? 1 : 0;
+    for (const path of paths) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) continue;
+      let replaced = false;
+      await this.app.vault.process(file, (text) => {
+        const out = text.replace(re, `$1${newKey}`);
+        replaced = out !== text;
+        return out;
+      });
+      if (replaced && file !== moved) changed++;
+    }
+    for (const key of [oldKey, newKey]) {
+      this.cache.delete(key);
+      this.summaries.delete(key);
+    }
+    if (this.getView()?.getCurrentItemKey() === oldKey) await this.loadAnnotations(newKey, true);
+    return changed;
+  }
+
   /** Opens the note a mention lives in, scrolled to its line. */
   private async openMention(mention: Mention): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(mention.path);
@@ -936,7 +1067,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       if (isNotFound(e)) {
         view.showError(
           `Item ${itemKey} is not in your Zotero library: deleted, merged into another item, or in a group library.`,
-          force
+          force,
+          itemKey
         );
         return;
       }

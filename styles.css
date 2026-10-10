@@ -118,6 +118,10 @@
   color: var(--text-error);
 }
 
+.view-content .zotero-annot-recover-btn {
+  margin-top: 8px;
+}
+
 .view-content .zotero-annot-list {
   padding: 8px 0;
   overflow-y: auto;
@@ -539,4 +543,50 @@
 .zotero-annot-cache-summary svg {
   width: 14px;
   height: 14px;
+}
+
+.zotero-annot-repair-entry {
+  padding: 8px 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.zotero-annot-repair-entry h4 {
+  margin: 4px 0;
+}
+
+.zotero-annot-repair-mentions {
+  margin: 4px 0;
+  font-size: var(--font-ui-small);
+}
+
+.zotero-annot-repair-line {
+  color: var(--text-muted);
+}
+
+.zotero-annot-repair-results {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.zotero-annot-repair-guess {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+}
+
+.zotero-annot-repair-queries {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.zotero-annot-repair-query {
+  margin-right: 8px;
+  cursor: pointer;
+}
+
+.zotero-annot-repair-done {
+  color: var(--text-success);
 }

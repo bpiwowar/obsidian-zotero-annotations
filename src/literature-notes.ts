@@ -356,6 +356,46 @@ export class LiteratureNotes {
     }
   }
 
+  /**
+   * Moves the literature note of `oldKey` to `newKey` (the item it was merged
+   * into): its properties, its name ("… – KEY") and its sync state, then
+   * refreshes it. Nothing is done when `newKey` already has a note. Returns
+   * the note moved, if any.
+   */
+  async rekey(oldKey: string, newKey: string): Promise<TFile | null> {
+    await this.loadState();
+    const file = await this.locked(oldKey, async () => {
+      const file = this.findNote(oldKey);
+      if (!file || this.findNote(newKey)) return null;
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+        fm["zotero-key"] = newKey;
+        fm.zotero = itemBacklink(newKey);
+      });
+      if (file.basename.includes(oldKey)) {
+        const folder = file.parent?.path ?? "";
+        const name = `${file.basename.split(oldKey).join(newKey)}.${file.extension}`;
+        const path = normalizePath(folder && folder !== "/" ? `${folder}/${name}` : name);
+        if (!this.app.vault.getAbstractFileByPath(path)) await this.app.fileManager.renameFile(file, path);
+      }
+      const tracked = this.state.items[oldKey];
+      delete this.state.items[oldKey];
+      if (tracked) this.state.items[newKey] = { ...tracked, path: file.path };
+      await this.saveState();
+      return file;
+    });
+    if (file) await this.locked(newKey, () => this.refresh(newKey, file));
+    return file;
+  }
+
+  /** The title of an item as its literature note (or the note's offline copy) has it */
+  async knownTitle(itemKey: string): Promise<string | null> {
+    const file = this.findNote(itemKey);
+    if (!file) return null;
+    const title: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.title;
+    if (typeof title === "string" && title) return title;
+    return (await this.cachedPaper(itemKey))?.info.title ?? null;
+  }
+
   private async create(itemKey: string, onlyWithNotes: boolean): Promise<TFile | null> {
     const bundle = await this.fetchBundle(itemKey);
     if (!bundle || (onlyWithNotes && bundle.notes.length === 0)) return null;
