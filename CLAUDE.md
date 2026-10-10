@@ -113,6 +113,16 @@ for one `Zotero-Server-ID`. Write access (`ZoteroWriter`, Zotero 10+) needs a ke
 Bulk commands: "Refresh all" (`refreshAll`, a full `doSync` over every tracked note, edited regions kept),
 "Send all" (`pushAll`, interactive) and "Sync all" (send, then refresh); the incremental sync is "Sync changed".
 
+### Item fields as properties
+
+`item-fields.ts`: `authors` (creators of type author, "First Last") is a list property synced both ways. The value last
+synced is kept per note (`TrackedNote.fields`), so that `pullField` (on refresh) tells a Zotero change (replaces the
+property) from an Obsidian edit (kept). `doPush` finds properties that differ from the synced value; fields with
+`confirm` (authors) are asked about in `push` (`confirmField`: send / keep Zotero's / later) — never while the note is
+the active one unless the push is interactive, and once per value in the background. Authors kept from Zotero keep
+their two-field split; new names are parsed ("Last, First", else the last word is the last name). Other creators are
+kept after the authors.
+
 ### Drag and drop
 
 Annotation cards are draggable: the drop inserts `annotationMarkdown` (note-format.ts), the

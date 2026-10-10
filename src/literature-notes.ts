@@ -8,6 +8,7 @@
  *     zotero-pdf: zotero://open-pdf/…  ← its PDF in Zotero's reader
  *     pdf: file:///…/paper.pdf      ← the PDF file (or other file)
  *     zotero-note: NOTEKEY          ← the Zotero note the body mirrors
+ *     authors, keywords             ← synced both ways (see `item-fields.ts`)
  *     ---
  *     …a Zotero child note, as Markdown…
  *
@@ -27,7 +28,7 @@
  * copy of what it shows sits in a block at the end of the note, for when
  * Zotero cannot be reached (see `annotation-cache.ts`).
  */
-import { App, Notice, TFile, arrayBufferToBase64, htmlToMarkdown, normalizePath } from "obsidian";
+import { App, Notice, TFile, arrayBufferToBase64, getFrontMatterInfo, htmlToMarkdown, normalizePath, parseYaml } from "obsidian";
 import { crypto, fs } from "./node";
 import {
   ZoteroApiItem,
@@ -61,6 +62,7 @@ import {
 } from "./note-format";
 import { ImageRef, checkConversion, imageSources, markdownToHtml } from "./note-html";
 import { choose } from "./confirm-modal";
+import { ITEM_FIELDS, ItemField, mergeSets, pullField, readList, sameValue } from "./item-fields";
 
 export interface LiteratureNoteSettings {
   /** Folder new literature notes are created in */
@@ -99,6 +101,8 @@ interface TrackedNote {
   regions: Record<string, RegionState>;
   /** Hash of the whole file after the last write */
   fileHash: string;
+  /** Item fields mirrored as properties (authors, keywords): value when last synced */
+  fields?: Record<string, string[]>;
 }
 
 interface SyncState {
@@ -210,6 +214,25 @@ function conversionIssueUrl(error: ConversionError, version: string): string {
   ].join("\n");
   const title = `Conversion to a Zotero note: ${error.problems[0]}`;
   return `${ISSUES_URL}?title=${encodeURIComponent(title)}&body=${encodeURIComponent(body)}`;
+}
+
+/** A property edited in Obsidian that waits for the user's go-ahead (see `ItemField.confirm`) */
+interface FieldEdit {
+  field: ItemField;
+  local: string[];
+  remote: string[];
+  /** Zotero's value changed too since the last sync */
+  zoteroChanged: boolean;
+}
+
+/** The frontmatter of a note's text (empty when none or unreadable) */
+function frontmatterOf(text: string): Record<string, unknown> {
+  const info = getFrontMatterInfo(text);
+  try {
+    return (info.exists ? (parseYaml(info.frontmatter) as Record<string, unknown> | null) : null) ?? {};
+  } catch {
+    return {};
+  }
 }
 
 /** A region edited on both sides */
@@ -349,8 +372,8 @@ export class LiteratureNotes {
     const body = single ? `${notes[0].markdown.trim()}\n` : notes.map((n) => noteRegion(n.key, n.markdown)).join("\n\n");
 
     const file = await this.app.vault.create(path, withCache(body, await this.cacheJson(itemKey)));
-    await this.writeFrontmatter(file, bundle, single);
-    await this.track(itemKey, file, bundle, notes);
+    const fields = await this.writeFrontmatter(file, bundle, single);
+    await this.track(itemKey, file, bundle, notes, fields);
     return file;
   }
 
@@ -445,8 +468,8 @@ export class LiteratureNotes {
       return withCache(rewrite(text), block);
     });
 
-    await this.writeFrontmatter(file, bundle, single);
-    await this.track(itemKey, file, bundle, notes, new Set([...kept, ...untouched]));
+    const fields = await this.writeFrontmatter(file, bundle, single);
+    await this.track(itemKey, file, bundle, notes, fields, new Set([...kept, ...untouched]));
     if (kept.length > 0) {
       new Notice(
         `${file.basename}: ${kept.length} note section(s) changed both in Obsidian and in Zotero were ` +
@@ -455,8 +478,11 @@ export class LiteratureNotes {
     }
   }
 
-  private async writeFrontmatter(file: TFile, bundle: ItemBundle, single: string | null): Promise<void> {
+  /** Writes the properties from Zotero; returns the synced values of the item fields (see `pullField`) */
+  private async writeFrontmatter(file: TFile, bundle: ItemBundle, single: string | null): Promise<Record<string, string[]>> {
     const d = bundle.item.data;
+    const bases = this.state.items[bundle.item.key]?.fields ?? {};
+    const fields: Record<string, string[]> = {};
     await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
       fm["zotero-key"] = bundle.item.key;
       fm.title = (d.title as string) || null;
@@ -472,7 +498,13 @@ export class LiteratureNotes {
         delete fm["zotero-pdf"];
         delete fm.pdf;
       }
+      for (const field of ITEM_FIELDS) {
+        const sync = pullField(field, readList(fm[field.property]), bases[field.property], field.read(bundle.item));
+        if (sync.property) fm[field.property] = sync.property;
+        fields[field.property] = sync.base;
+      }
     });
+    return fields;
   }
 
   /**
@@ -484,6 +516,7 @@ export class LiteratureNotes {
     file: TFile,
     bundle: ItemBundle,
     notes: RenderedNote[],
+    fields: Record<string, string[]>,
     keptLocal: Set<string> = new Set()
   ): Promise<void> {
     const prev = this.state.items[itemKey]?.regions || {};
@@ -498,7 +531,7 @@ export class LiteratureNotes {
       }
     }
     const descendants = [...bundle.attachments.map((a) => a.key), ...bundle.notes.map((n) => n.key)];
-    this.state.items[itemKey] = { path: file.path, descendants, regions, fileHash: hash(text) };
+    this.state.items[itemKey] = { path: file.path, descendants, regions, fileHash: hash(text), fields };
     this.lastRefresh.set(itemKey, Date.now());
     await this.saveState();
   }
@@ -545,7 +578,18 @@ export class LiteratureNotes {
     const itemKey = this.keyOf(file);
     if (!itemKey) return 0;
     await this.loadState();
-    const { sent, conflicts, failures } = await this.locked(itemKey, () => this.doPush(itemKey, file, everyRegion));
+    const { sent, conflicts, failures, fieldEdits } = await this.locked(itemKey, () =>
+      this.doPush(itemKey, file, everyRegion)
+    );
+    // Not while the note is being edited, unless asked
+    if (interactive || this.app.workspace.getActiveFile() !== file) {
+      for (const edit of fieldEdits) {
+        const id = `${edit.field.property}:${itemKey}:${edit.local.join("\n")}`;
+        if (!interactive && this.reported.has(id)) continue;
+        this.reported.add(id);
+        await this.confirmField(itemKey, file, edit);
+      }
+    }
     if (interactive) {
       for (const failure of failures) await this.reportFailure(file, failure);
       for (const conflict of conflicts) await this.resolveConflict(itemKey, file, conflict);
@@ -578,8 +622,8 @@ export class LiteratureNotes {
     itemKey: string,
     file: TFile,
     all: boolean
-  ): Promise<{ sent: number; conflicts: Conflict[]; failures: ConversionError[] }> {
-    const none = { sent: 0, conflicts: [], failures: [] };
+  ): Promise<{ sent: number; conflicts: Conflict[]; failures: ConversionError[]; fieldEdits: FieldEdit[] }> {
+    const none = { sent: 0, conflicts: [], failures: [], fieldEdits: [] };
     const tracked = this.state.items[itemKey];
     if (!tracked || tracked.path !== file.path) return none;
     const text = await this.app.vault.read(file);
@@ -590,7 +634,15 @@ export class LiteratureNotes {
     // The body of a paper that never had Zotero notes becomes one
     const body = text.slice(layout.contentStart, layout.contentEnd).trim();
     const newBody = layout.regions.length === 0 && Object.keys(tracked.regions).length === 0 ? body : "";
-    if (edited.length === 0 && !newBody) return none;
+    // Properties edited since the last sync (see `item-fields.ts`)
+    const fm = frontmatterOf(text);
+    const bases = tracked.fields ?? {};
+    const editedFields = ITEM_FIELDS.flatMap((field) => {
+      const local = readList(fm[field.property]);
+      const base = bases[field.property];
+      return local !== null && base !== undefined && !sameValue(field, local, base) ? [{ field, local, base }] : [];
+    });
+    if (edited.length === 0 && !newBody && editedFields.length === 0) return none;
 
     const bundle = await this.fetchBundle(itemKey);
     if (!bundle) return none;
@@ -600,6 +652,36 @@ export class LiteratureNotes {
     const failures: ConversionError[] = [];
     const created: { key: string; body: string }[] = [];
     let sent = 0;
+
+    // Item fields: sent at once, or left for the user to confirm
+    const fieldEdits: FieldEdit[] = [];
+    const patch: Record<string, unknown> = {};
+    const patched: Record<string, string[]> = {};
+    const properties: Record<string, string[]> = {};
+    for (const { field, local, base } of editedFields) {
+      const remote = field.read(bundle.item);
+      if (sameValue(field, local, remote)) {
+        patched[field.property] = remote;
+        continue;
+      }
+      const zoteroChanged = !sameValue(field, remote, base);
+      if (field.confirm) {
+        fieldEdits.push({ field, local, remote, zoteroChanged });
+        continue;
+      }
+      const value = zoteroChanged ? mergeSets(base, local, remote) : local;
+      Object.assign(patch, field.write(bundle.item, value));
+      patched[field.property] = value;
+      if (!sameValue(field, value, local)) properties[field.property] = value;
+    }
+    if (Object.keys(patch).length > 0) {
+      await this.patchItem(serverId, bundle.item, patch);
+      sent++;
+    }
+    tracked.fields = { ...bases, ...patched };
+    if (Object.keys(properties).length > 0) {
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => Object.assign(fm, properties));
+    }
 
     for (const region of edited) {
       try {
@@ -654,7 +736,49 @@ export class LiteratureNotes {
     const newKeys = [...created.map((c) => c.key), ...(single ? [single] : [])];
     tracked.descendants.push(...newKeys);
     await this.saveState();
-    return { sent: sent + newKeys.length, conflicts, failures };
+    return { sent: sent + newKeys.length, conflicts, failures, fieldEdits };
+  }
+
+  /** Updates fields of an item; a version bumped meanwhile (Zotero does it on its own) is retried once */
+  private async patchItem(serverId: string, item: ZoteroApiItem, data: Record<string, unknown>): Promise<void> {
+    try {
+      await this.writer.patchItem(serverId, item.key, item.version, data);
+    } catch (e) {
+      if (!(e instanceof ZoteroConflictError)) throw e;
+      await this.writer.patchItem(serverId, item.key, (await fetchItem(item.key)).version, data);
+    }
+  }
+
+  /** Asks whether a property edited in Obsidian (authors) goes to Zotero, or Zotero's value comes back */
+  private async confirmField(itemKey: string, file: TFile, edit: FieldEdit): Promise<void> {
+    const { field, local, remote } = edit;
+    const list = (values: string[]) => (values.length > 0 ? values.join("; ") : "(none)");
+    const choice = await choose(
+      this.app,
+      `Send the ${field.label} to Zotero?`,
+      `The ${field.label} of "${file.basename}" were edited in Obsidian` +
+        (edit.zoteroChanged ? ", and changed in Zotero too since the last sync." : ".") +
+        `\n\nObsidian: ${list(local)}\n\nZotero: ${list(remote)}`,
+      ["Send to Zotero", "Keep Zotero's", "Decide later"]
+    );
+    if (choice !== 0 && choice !== 1) return;
+    await this.locked(itemKey, async () => {
+      const tracked = this.state.items[itemKey];
+      if (!tracked) return;
+      const item = await fetchItem(itemKey);
+      if (choice === 0) {
+        const { serverId } = await fetchLibraryState();
+        await this.patchItem(serverId, item, field.write(item, local));
+        tracked.fields = { ...tracked.fields, [field.property]: local };
+      } else {
+        const value = field.read(item);
+        await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+          fm[field.property] = value;
+        });
+        tracked.fields = { ...tracked.fields, [field.property]: value };
+      }
+      await this.saveState();
+    });
   }
 
   /** Replaces a Zotero note by a region of the file; its new sync state */
