@@ -1,6 +1,7 @@
 /**
  * Fields of a Zotero item mirrored as list properties of its literature note,
- * both ways: `authors` (the item's authors, "First Last"). The value last synced is kept, so that each side's changes can be
+ * both ways: `authors` (the item's authors, "First Last") and `keywords` (its
+ * tags). The value last synced is kept, so that each side's changes can be
  * told apart: a property edited in Obsidian is sent to Zotero (authors only
  * once the user confirmed), a field changed in Zotero replaces the property.
  */
@@ -58,7 +59,26 @@ export const AUTHORS: ItemField = {
   confirm: true,
 };
 
-export const ITEM_FIELDS = [AUTHORS];
+type Tag = { tag: string; type?: number };
+
+function tags(item: ZoteroApiItem): Tag[] {
+  return Array.isArray(item.data.tags) ? (item.data.tags as Tag[]) : [];
+}
+
+export const KEYWORDS: ItemField = {
+  property: "keywords",
+  label: "keywords",
+  read: (item) => sortedUnique(tags(item).map((t) => t.tag)),
+  write: (item, values) => {
+    // Tags kept keep their type (automatic tags)
+    const known = new Map(tags(item).map((t) => [t.tag, t]));
+    return { tags: sortedUnique(values).map((v) => known.get(v) ?? { tag: v }) };
+  },
+  ordered: false,
+  confirm: false,
+};
+
+export const ITEM_FIELDS = [AUTHORS, KEYWORDS];
 
 function sortedUnique(values: string[]): string[] {
   return [...new Set(values.map((v) => v.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));

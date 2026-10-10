@@ -115,11 +115,14 @@ Bulk commands: "Refresh all" (`refreshAll`, a full `doSync` over every tracked n
 
 ### Item fields as properties
 
-`item-fields.ts`: `authors` (creators of type author, "First Last") is a list property synced both ways. The value last
+`item-fields.ts`: `authors` (creators of type author, "First Last") and `keywords` (tags, sorted, compared as sets)
+are list properties synced both ways. The value last
 synced is kept per note (`TrackedNote.fields`), so that `pullField` (on refresh) tells a Zotero change (replaces the
 property) from an Obsidian edit (kept). `doPush` finds properties that differ from the synced value; fields with
 `confirm` (authors) are asked about in `push` (`confirmField`: send / keep Zotero's / later) — never while the note is
-the active one unless the push is interactive, and once per value in the background. Authors kept from Zotero keep
+the active one unless the push is interactive, and once per value in the background. Keywords are sent without
+asking; changed on both sides they are merged three ways (`mergeSets`), on refresh and on push. Tags kept keep
+their type (automatic tags). Authors kept from Zotero keep
 their two-field split; new names are parsed ("Last, First", else the last word is the last name). Other creators are
 kept after the authors.
 
