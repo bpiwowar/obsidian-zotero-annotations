@@ -79,7 +79,7 @@ export class RepairModal extends Modal {
   onOpen(): void {
     const total = this.relinked.length + this.entries.length;
     this.setTitle(`Zotero link repair: ${total} item(s) no longer in Zotero`);
-    this.contentEl.addClass("zotero-annot-repair");
+    this.modalEl.addClass("zotero-annot-repair");
     if (this.relinked.length > 0) {
       this.contentEl.createEl("h3", { text: `Relinked (${this.relinked.length})` });
       this.contentEl.createEl("p", {

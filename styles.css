@@ -590,3 +590,15 @@
 .zotero-annot-repair-done {
   color: var(--text-success);
 }
+
+/* Text of the repair report can be selected and copied (keys, titles, lines of notes) */
+.zotero-annot-repair,
+.zotero-annot-repair * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.zotero-annot-repair button {
+  user-select: none;
+  -webkit-user-select: none;
+}
