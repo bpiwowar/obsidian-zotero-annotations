@@ -133,19 +133,24 @@ kept after the authors.
 ### Merged and deleted items
 
 `item-recovery.ts`: Zotero merges duplicates by trashing all but one item, the item kept listing the others in
-`relations["dc:replaces"]`. `deadItem` tells a key that is trashed (`data.deleted`, still served by `/items/KEY`) or
-gone (404); `deadItems` checks keys 50 per request (`itemKey=` leaves out trashed items, so missing keys are then asked
-one by one). `findReplacement` searches the title (`/items/top?q=`) for an item that replaces it, else scans the whole
-library once (cached 5 min) for the merge record — both certain — else guesses an item with the same title (DOI, then
-year, break ties). `main.ts` (`recoverItems`) relinks the certain ones (`relink`: the `zotero://select` links of every
-note mentioning the key; `LiteratureNotes.rekey`: the literature note's `zotero-key`, `zotero`, the key in its name, its
-sync state) and opens `RepairModal` (`repair-modal.ts`): a report of what was relinked, then each other item with its
-mentions and a library search from its title and its link texts (`linkTexts`: "(Doe et al., 2020, p. 3)" → "Doe et al
-2020"), the guess first; "Use this item" relinks. The report (`RepairReport`, kept in `main.ts`) holds its state —
-items picked, queries typed, scroll — so that it reopens as it was: from the notice shown when a mention is opened
-from it, or by command. Dead-item and replacement lookups (`memo`) and the report's searches (`searchForRepair`)
-are reused for 5 minutes. Triggered from the sidebar (404 error, or the "In the Zotero trash"
-line of a trashed item) and by the "Repair links…" commands (select links of the note, or every key of the mention index).
+`relations["dc:replaces"]`. `deadItem` tells a key that is trashed (`data.deleted`, still served by `/items/KEY`), gone
+(404) or malformed (not 8 characters: links, the mention index and the cursor detector accept any length); `deadItems`
+checks valid keys 50 per request (`itemKey=` leaves out trashed items — missing keys are then asked one by one — and a
+malformed key in it makes Zotero answer with other items). What is known of a dead item comes from Zotero's trash, else
+its literature note (`withMetadata`, `LiteratureNotes.knownMetadata`: title, authors, year), else its links
+(`linkTexts`: titles, and citations "(Doe et al., 2020, p. 3)" → "Doe 2020"). `findReplacement` searches the title for
+an item that replaces it, else scans the library once (cached 5 min) for the merge record — both certain — else guesses
+the item most like it (`resemblance`: shared title words, DOI, year, first author; also searched by first author and
+year). `main.ts` (`recoverItems`) relinks the certain ones (`relink`: the `zotero://select` links of every note
+mentioning the key; `LiteratureNotes.rekey`: the literature note's `zotero-key`, `zotero`, the key in its name, its sync
+state, then a refresh — not when the new item has a note) and opens `RepairModal` (`repair-modal.ts`): what was
+relinked, then each other item with what is known of it, its mentions, toggles for the queries to combine
+(`searchQueries`) or a typed one, web searches, and "Use this item". "Search automatically" (local storage) searches
+every item on opening, otherwise "Search all" does. The report (`RepairReport`, kept in `main.ts`) holds its state —
+items picked, queries, results, scroll — and reopens as it was from the notice shown when a note is opened from it, or
+by command. Lookups (`memo`) and the report's searches (`searchForRepair`) are reused for 5 minutes. Triggered from the
+sidebar (404 error, or the "In the Zotero trash" line of a trashed item) and by the "Repair links…" commands (select
+links of the note, or the keys of the mention index that have select links).
 
 ### Drag and drop
 

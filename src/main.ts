@@ -20,8 +20,8 @@ import { EditorView } from "@codemirror/view";
 import { confirm } from "./confirm-modal";
 import { CACHE_LANGUAGE, parseCache, readOnlyCache } from "./annotation-cache";
 import { os } from "./node";
-import { DeadItem, deadItem, deadItems, findReplacement, linkTexts } from "./item-recovery";
-import { RelinkedItem, RepairEntry, RepairModal, RepairReport } from "./repair-modal";
+import { DeadItem, deadItem, deadItems, findReplacement, linkTexts, searchQueries, withMetadata } from "./item-recovery";
+import { RelinkResult, RelinkedItem, RepairEntry, RepairModal, RepairReport } from "./repair-modal";
 
 /** When literature notes get created */
 type CreateMode = "manual" | "cursor" | "linked";
@@ -64,11 +64,14 @@ const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
 
 const DOUBLE_CLICK_MS = 300;
 
+/** Local storage key: whether the link repair report searches every item when it opens */
+const REPAIR_AUTO_SEARCH = "zotero-annotations-repair-auto-search";
+
 /** Searches of the link repair report are reused this long */
 const REPAIR_SEARCH_MS = 5 * 60_000;
 
-/** `zotero://select` links of a note (group 2: the item key) */
-const SELECT_LINK_RE = /zotero:\/\/select\/(library|groups\/\d+)\/items\/([A-Z0-9]{8})(?![A-Z0-9])/g;
+/** `zotero://select` links of a note (group 2: the item key, possibly malformed — not 8 characters) */
+const SELECT_LINK_RE = /zotero:\/\/select\/(library|groups\/\d+)\/items\/([A-Z0-9]+)/gi;
 
 /** Showing a paper asks Zotero whether anything changed at most this often */
 const PAPER_CHECK_MS = 10_000;
@@ -753,7 +756,8 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   async createLinkedNotes(): Promise<void> {
     for (const key of await this.mentions.getKeys()) {
       if (!this.settings.literatureNotes || this.settings.createMode !== "linked") return;
-      if (!this.literature.findNote(key)) await this.ensureLiteratureNote(key);
+      // Malformed keys (see "Repair links…") name no item
+      if (/^[A-Z0-9]{8}$/.test(key) && !this.literature.findNote(key)) await this.ensureLiteratureNote(key);
     }
   }
 
@@ -867,7 +871,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
    */
   private async repairLinksInNote(file: TFile): Promise<void> {
     const text = await this.app.vault.read(file);
-    const keys = new Set(Array.from(text.matchAll(SELECT_LINK_RE), (m) => m[2]));
+    const keys = new Set(Array.from(text.matchAll(SELECT_LINK_RE), (m) => m[2].toUpperCase()));
     const own = this.literature.keyOf(file);
     if (own) keys.add(own);
     await this.repairLinks([...keys], file.basename);
@@ -875,7 +879,13 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
 
   /** Repairs the links of every note of the vault (see {@link repairLinksInNote}) */
   private async repairLinksInVault(): Promise<void> {
-    await this.repairLinks(await this.mentions.getKeys(), "Vault");
+    // Only paper links are repaired (open-pdf links name attachments)
+    const keys: string[] = [];
+    for (const key of await this.mentions.getKeys()) {
+      const select = new RegExp(`zotero://select/(?:library|groups/\\d+)/items/${key}(?![A-Z0-9])`, "i");
+      if ((await this.mentions.getMentions(key)).some((m) => select.test(m.text))) keys.push(key);
+    }
+    await this.repairLinks(keys, "Vault");
   }
 
   /** Relinks the dead items among `keys` (Zotero links of `where`) */
@@ -917,20 +927,22 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   private async recoverItems(dead: DeadItem[], onItem?: (item: DeadItem) => void): Promise<void> {
     const relinked: RelinkedItem[] = [];
     const review: RepairEntry[] = [];
-    for (const item of dead) {
-      onItem?.(item);
-      const title = item.title ?? (await this.literature.knownTitle(item.key));
-      const found = await findReplacement(item, title);
-      if (found?.certain) {
-        const notes = await this.relink(item.key, found.key);
-        relinked.push({ dead: item, title, key: found.key, newTitle: found.title, notes });
+    for (const found of dead) {
+      onItem?.(found);
+      // What Zotero's trash does not say, the literature note may, else the text of the links
+      let item = withMetadata(found, await this.literature.knownMetadata(found.key));
+      const mentions = await this.mentions.getMentions(item.key);
+      const texts = linkTexts(
+        mentions.map((m) => m.text),
+        item.key
+      );
+      if (!item.title && texts.titles.length > 0) item = { ...item, title: texts.titles[0] };
+      const replacement = await findReplacement(item);
+      if (replacement?.certain) {
+        const result = await this.relink(item.key, replacement.key);
+        relinked.push({ dead: item, key: replacement.key, newTitle: replacement.title, result });
       } else {
-        const mentions = await this.mentions.getMentions(item.key);
-        const texts = linkTexts(
-          mentions.map((m) => m.text),
-          item.key
-        );
-        review.push({ dead: item, title, guess: found?.key ?? null, mentions, texts });
+        review.push({ dead: item, guess: replacement?.key ?? null, mentions, queries: searchQueries(item, texts) });
       }
     }
     this.repairReport = { relinked, review };
@@ -944,16 +956,27 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     new RepairModal(this.app, report, {
       search: (query) => this.searchForRepair(query),
       relink: (oldKey, newKey) => this.relink(oldKey, newKey),
+      openNote: (path) => {
+        void this.openMention({ path, line: 0, text: "" });
+        this.backToReportNotice();
+      },
+      openUrl: (url) => window.open(url),
+      autoSearch: this.app.loadLocalStorage(REPAIR_AUTO_SEARCH) !== "off",
+      setAutoSearch: (on) => this.app.saveLocalStorage(REPAIR_AUTO_SEARCH, on ? "on" : "off"),
       openMention: (mention) => {
         void this.openMention(mention);
-        // The way back to the report
-        const back = createFragment();
-        back.appendText("Opened from the Zotero link repair report. ");
-        back.createEl("a", { text: "Back to the report" }).addEventListener("click", () => this.showRepairReport());
-        new Notice(back, 15_000);
+        this.backToReportNotice();
       },
       showInZotero: (key) => this.openInZotero(`zotero://select/library/items/${key}`),
     }).open();
+  }
+
+  /** A notice leading back to the repair report, after opening a note from it */
+  private backToReportNotice(): void {
+    const back = createFragment();
+    back.appendText("Opened from the Zotero link repair report. ");
+    back.createEl("a", { text: "Back to the report" }).addEventListener("click", () => this.showRepairReport());
+    new Notice(back, 15_000);
   }
 
   /** Library search of the repair report, reused for a few minutes */
@@ -967,9 +990,10 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   }
 
   /** Points the vault's links (and the literature note) of item `oldKey` at `newKey`; returns the number of notes changed */
-  private async relink(oldKey: string, newKey: string): Promise<number> {
-    const moved = this.settings.literatureNotes ? await this.literature.rekey(oldKey, newKey) : null;
-    const re = new RegExp(`(zotero://select/(?:library|groups/\\d+)/items/)${oldKey}(?![A-Z0-9])`, "g");
+  private async relink(oldKey: string, newKey: string): Promise<RelinkResult> {
+    const literature = await this.literature.rekey(oldKey, newKey);
+    const moved = literature?.moved ? literature.file : null;
+    const re = new RegExp(`(zotero://select/(?:library|groups/\\d+)/items/)${oldKey}(?![A-Z0-9])`, "gi");
     const paths = new Set((await this.mentions.getMentions(oldKey)).map((m) => m.path));
     let changed = moved ? 1 : 0;
     for (const path of paths) {
@@ -988,7 +1012,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       this.summaries.delete(key);
     }
     if (this.getView()?.getCurrentItemKey() === oldKey) await this.loadAnnotations(newKey, true);
-    return changed;
+    return { notes: changed, literature: literature && { path: literature.file.path, moved: literature.moved } };
   }
 
   /** Opens the note a mention lives in, scrolled to its line. */

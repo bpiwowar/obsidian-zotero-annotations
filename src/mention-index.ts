@@ -16,13 +16,13 @@ export interface Mention {
  * key, but indexing them costs nothing — a lookup simply never hits them.
  */
 const ZOTERO_URI_SOURCE =
-  "zotero:\\/\\/(?:select|open-pdf)\\/(?:library|groups\\/\\d+)\\/items\\/([A-Z0-9]{8})";
+  "zotero:\\/\\/(?:select|open-pdf)\\/(?:library|groups\\/\\d+)\\/items\\/([A-Z0-9]+)";
 
 /** Longest line snippet kept for context */
 const MAX_SNIPPET = 300;
 
 /** Bumped when the cache format changes, to invalidate files written by older versions */
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 /** How long to wait after a note is modified before re-scanning it */
 const RESCAN_DEBOUNCE_MS = 500;

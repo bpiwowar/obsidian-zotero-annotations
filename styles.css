@@ -587,6 +587,13 @@
   cursor: pointer;
 }
 
+.zotero-annot-repair-query.is-active {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-radius: var(--radius-s);
+  padding: 0 4px;
+}
+
 .zotero-annot-repair-done {
   color: var(--text-success);
 }

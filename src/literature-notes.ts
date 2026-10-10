@@ -62,7 +62,8 @@ import {
 } from "./note-format";
 import { ImageRef, checkConversion, imageSources, markdownToHtml, wikilinkPaths } from "./note-html";
 import { choose } from "./confirm-modal";
-import { ITEM_FIELDS, ItemField, mergeSets, pullField, readList, sameValue } from "./item-fields";
+import { AUTHORS, ITEM_FIELDS, ItemField, mergeSets, pullField, readList, sameValue } from "./item-fields";
+import type { ItemMetadata } from "./item-recovery";
 
 export interface LiteratureNoteSettings {
   /** Folder new literature notes are created in */
@@ -359,14 +360,15 @@ export class LiteratureNotes {
   /**
    * Moves the literature note of `oldKey` to `newKey` (the item it was merged
    * into): its properties, its name ("… – KEY") and its sync state, then
-   * refreshes it. Nothing is done when `newKey` already has a note. Returns
-   * the note moved, if any.
+   * refreshes it. When `newKey` already has a note, the note is left as it
+   * is (`moved` false). Null when `oldKey` has no literature note.
    */
-  async rekey(oldKey: string, newKey: string): Promise<TFile | null> {
+  async rekey(oldKey: string, newKey: string): Promise<{ file: TFile; moved: boolean } | null> {
     await this.loadState();
-    const file = await this.locked(oldKey, async () => {
+    const result = await this.locked(oldKey, async () => {
       const file = this.findNote(oldKey);
-      if (!file || this.findNote(newKey)) return null;
+      if (!file) return null;
+      if (this.findNote(newKey)) return { file, moved: false };
       await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
         fm["zotero-key"] = newKey;
         fm.zotero = itemBacklink(newKey);
@@ -381,19 +383,22 @@ export class LiteratureNotes {
       delete this.state.items[oldKey];
       if (tracked) this.state.items[newKey] = { ...tracked, path: file.path };
       await this.saveState();
-      return file;
+      return { file, moved: true };
     });
-    if (file) await this.locked(newKey, () => this.refresh(newKey, file));
-    return file;
+    // From the new item: properties (authors, keywords…), Zotero notes, offline copy
+    if (result?.moved) await this.locked(newKey, () => this.refresh(newKey, result.file));
+    return result;
   }
 
-  /** The title of an item as its literature note (or the note's offline copy) has it */
-  async knownTitle(itemKey: string): Promise<string | null> {
+  /** What the literature note of an item (properties, offline copy) knows of it, if there is one */
+  async knownMetadata(itemKey: string): Promise<ItemMetadata | null> {
     const file = this.findNote(itemKey);
     if (!file) return null;
-    const title: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.title;
-    if (typeof title === "string" && title) return title;
-    return (await this.cachedPaper(itemKey))?.info.title ?? null;
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
+    const info = (await this.cachedPaper(itemKey))?.info;
+    const title = typeof fm.title === "string" && fm.title ? fm.title : (info?.title ?? null);
+    const authors = readList(fm[AUTHORS.property]) ?? (info?.creators ? info.creators.split(", ") : []);
+    return { title, authors, year: /\b(\d{4})\b/.exec(info?.date ?? "")?.[1] ?? null, path: file.path };
   }
 
   private async create(itemKey: string, onlyWithNotes: boolean): Promise<TFile | null> {

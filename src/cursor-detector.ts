@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state";
  * Regex to match zotero://select/library/items/ITEMKEY patterns.
  * The item key is an 8-char alphanumeric string.
  */
-const ZOTERO_LINK_RE = /zotero:\/\/select\/library\/items\/([A-Z0-9]{8})/i;
+const ZOTERO_LINK_RE = /zotero:\/\/select\/library\/items\/([A-Z0-9]+)/i;
 
 /**
  * Extracts a Zotero item key from a URL string, if it matches.
@@ -32,7 +32,7 @@ export interface ZoteroLinkHandlers {
 }
 
 /** A zotero:// link and its query, as written bare or in a Markdown link */
-const LINK_SOURCE = "zotero:\\/\\/(select|open-pdf)\\/library\\/items\\/([A-Z0-9]{8})(?![A-Z0-9])(?:\\?[^)\\s]*)?";
+const LINK_SOURCE = "zotero:\\/\\/(select|open-pdf)\\/library\\/items\\/([A-Z0-9]+)(?:\\?[^)\\s]*)?";
 
 /** A Markdown link to a zotero:// URL: [text](zotero://…), the text possibly with escaped brackets */
 const MD_LINK_SOURCE = `\\[(?:[^\\]\\\\]|\\\\.)*\\]\\((${LINK_SOURCE})\\)`;
