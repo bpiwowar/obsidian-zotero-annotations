@@ -123,8 +123,8 @@ Bulk commands: "Refresh all" (`refreshAll`, a full `doSync` over every tracked n
 are list properties synced both ways. The value last
 synced is kept per note (`TrackedNote.fields`), so that `pullField` (on refresh) tells a Zotero change (replaces the
 property) from an Obsidian edit (kept). `doPush` finds properties that differ from the synced value; fields with
-`confirm` (authors) are asked about in `push` (`confirmField`: send / keep Zotero's / later) — never while the note is
-the active one unless the push is interactive, and once per value in the background. Keywords are sent without
+`confirm` (authors) are asked about in `push` (`confirmField`: send / keep Zotero's / later) — in the background once
+per value, as a notice with a "Review" link (`fieldNotice`) while the note is the active one, else a dialog. Keywords are sent without
 asking; changed on both sides they are merged three ways (`mergeSets`), on refresh and on push. Tags kept keep
 their type (automatic tags). Authors kept from Zotero keep
 their two-field split; new names are parsed ("Last, First", else the last word is the last name). Other creators are
