@@ -626,14 +626,12 @@ export class LiteratureNotes {
     const { sent, conflicts, failures, fieldEdits } = await this.locked(itemKey, () =>
       this.doPush(itemKey, file, everyRegion)
     );
-    // Asked when the push is, or once per value in the background: a notice
-    // while the note is being edited (no dialog under the cursor), else a dialog
+    // Asked each time the push is, else once per value (after 30 s without typing, on leaving the note…)
     for (const edit of fieldEdits) {
       const id = `${edit.field.property}:${itemKey}:${edit.local.join("\n")}`;
       if (!interactive && this.reported.has(id)) continue;
       this.reported.add(id);
-      if (!interactive && this.app.workspace.getActiveFile() === file) this.fieldNotice(itemKey, file, edit);
-      else await this.confirmField(itemKey, file, edit);
+      await this.confirmField(itemKey, file, edit);
     }
     if (interactive) {
       for (const failure of failures) await this.reportFailure(file, failure);
@@ -792,18 +790,6 @@ export class LiteratureNotes {
       if (!(e instanceof ZoteroConflictError)) throw e;
       await this.writer.patchItem(serverId, item.key, (await fetchItem(item.key)).version, data);
     }
-  }
-
-  /** Tells that a property edited in Obsidian waits to be confirmed, with a link to the question */
-  private fieldNotice(itemKey: string, file: TFile, edit: FieldEdit): void {
-    const message = createFragment();
-    message.appendText(`${file.basename}: ${edit.field.label} edited, not sent to Zotero yet. `);
-    let notice: Notice | null = null;
-    message.createEl("a", { text: "Review" }).addEventListener("click", () => {
-      notice?.hide();
-      void this.confirmField(itemKey, file, edit);
-    });
-    notice = new Notice(message, 20_000);
   }
 
   /** Asks whether a property edited in Obsidian (authors) goes to Zotero, or Zotero's value comes back */
