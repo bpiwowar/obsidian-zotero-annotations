@@ -1,6 +1,6 @@
 {
   "name": "obsidian-zotero-annotations",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Show the Zotero annotations of the paper under the cursor in a sidebar, and keep literature notes in sync with Zotero notes, in both directions.",
   "main": "main.js",
   "scripts": {
