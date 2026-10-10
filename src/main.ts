@@ -10,6 +10,7 @@ import {
   fetchLibraryState,
   isZoteroRunning,
   searchItemSummaries,
+  type ZoteroItemSummary,
 } from "./zotero-client";
 import { Mention, MentionIndex } from "./mention-index";
 import { PaperHit, PaperInfo, buildPaperOutline } from "./paper-outline";
@@ -20,7 +21,7 @@ import { confirm } from "./confirm-modal";
 import { CACHE_LANGUAGE, parseCache, readOnlyCache } from "./annotation-cache";
 import { os } from "./node";
 import { DeadItem, deadItem, deadItems, findReplacement, linkTexts } from "./item-recovery";
-import { RelinkedItem, RepairEntry, RepairModal } from "./repair-modal";
+import { RelinkedItem, RepairEntry, RepairModal, RepairReport } from "./repair-modal";
 
 /** When literature notes get created */
 type CreateMode = "manual" | "cursor" | "linked";
@@ -63,6 +64,9 @@ const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
 
 const DOUBLE_CLICK_MS = 300;
 
+/** Searches of the link repair report are reused this long */
+const REPAIR_SEARCH_MS = 5 * 60_000;
+
 /** `zotero://select` links of a note (group 2: the item key) */
 const SELECT_LINK_RE = /zotero:\/\/select\/(library|groups\/\d+)\/items\/([A-Z0-9]{8})(?![A-Z0-9])/g;
 
@@ -102,6 +106,10 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   private mentions!: MentionIndex;
   literature!: LiteratureNotes;
   private syncTimer: number | null = null;
+  /** The last link repair report, to reopen it (after jumping to a note from it) */
+  private repairReport: RepairReport | null = null;
+  /** Library searches of the repair report, by query */
+  private repairSearches = new Map<string, { at: number; items: Promise<ZoteroItemSummary[]> }>();
   /** Pending sends of edited literature notes, by path */
   private pushTimers = new Map<string, number>();
 
@@ -222,6 +230,16 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
           const file = this.app.workspace.getActiveFile();
           if (!file || file.extension !== "md") return false;
           if (!checking) void this.repairLinksInNote(file);
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "show-repair-report",
+        name: "Show the last report of Zotero link repairs",
+        checkCallback: (checking) => {
+          if (!this.repairReport) return false;
+          if (!checking) this.showRepairReport();
           return true;
         },
       });
@@ -915,12 +933,37 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         review.push({ dead: item, title, guess: found?.key ?? null, mentions, texts });
       }
     }
-    new RepairModal(this.app, relinked, review, {
-      search: (query) => searchItemSummaries(query),
+    this.repairReport = { relinked, review };
+    this.showRepairReport();
+  }
+
+  /** Opens the last repair report as it was left */
+  private showRepairReport(): void {
+    const report = this.repairReport;
+    if (!report) return;
+    new RepairModal(this.app, report, {
+      search: (query) => this.searchForRepair(query),
       relink: (oldKey, newKey) => this.relink(oldKey, newKey),
-      openMention: (mention) => void this.openMention(mention),
+      openMention: (mention) => {
+        void this.openMention(mention);
+        // The way back to the report
+        const back = createFragment();
+        back.appendText("Opened from the Zotero link repair report. ");
+        back.createEl("a", { text: "Back to the report" }).addEventListener("click", () => this.showRepairReport());
+        new Notice(back, 15_000);
+      },
       showInZotero: (key) => this.openInZotero(`zotero://select/library/items/${key}`),
     }).open();
+  }
+
+  /** Library search of the repair report, reused for a few minutes */
+  private searchForRepair(query: string): Promise<ZoteroItemSummary[]> {
+    const hit = this.repairSearches.get(query);
+    if (hit && Date.now() - hit.at < REPAIR_SEARCH_MS) return hit.items;
+    const items = searchItemSummaries(query);
+    this.repairSearches.set(query, { at: Date.now(), items });
+    items.catch(() => this.repairSearches.delete(query));
+    return items;
   }
 
   /** Points the vault's links (and the literature note) of item `oldKey` at `newKey`; returns the number of notes changed */

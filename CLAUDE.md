@@ -141,7 +141,10 @@ year, break ties). `main.ts` (`recoverItems`) relinks the certain ones (`relink`
 note mentioning the key; `LiteratureNotes.rekey`: the literature note's `zotero-key`, `zotero`, the key in its name, its
 sync state) and opens `RepairModal` (`repair-modal.ts`): a report of what was relinked, then each other item with its
 mentions and a library search from its title and its link texts (`linkTexts`: "(Doe et al., 2020, p. 3)" → "Doe et al
-2020"), the guess first; "Use this item" relinks. Triggered from the sidebar (404 error, or the "In the Zotero trash"
+2020"), the guess first; "Use this item" relinks. The report (`RepairReport`, kept in `main.ts`) holds its state —
+items picked, queries typed, scroll — so that it reopens as it was: from the notice shown when a mention is opened
+from it, or by command. Dead-item and replacement lookups (`memo`) and the report's searches (`searchForRepair`)
+are reused for 5 minutes. Triggered from the sidebar (404 error, or the "In the Zotero trash"
 line of a trashed item) and by the "Repair links…" commands (select links of the note, or every key of the mention index).
 
 ### Drag and drop

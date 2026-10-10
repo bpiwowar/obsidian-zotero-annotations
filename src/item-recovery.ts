@@ -31,6 +31,19 @@ const MERGE_RECORD_MS = 5 * 60_000;
 
 let mergeRecord: { at: number; replacedBy: Map<string, ZoteroApiItem> } | null = null;
 
+/** Lookups of dead items and of their replacements, reused as long as the merge record */
+const lookups = new Map<string, { at: number; value: Promise<unknown> }>();
+
+/** `compute()`, or its result for `id` when asked within {@link MERGE_RECORD_MS} (failures are not kept) */
+function memo<T>(id: string, compute: () => Promise<T>): Promise<T> {
+  const hit = lookups.get(id);
+  if (hit && Date.now() - hit.at < MERGE_RECORD_MS) return hit.value as Promise<T>;
+  const value = compute();
+  lookups.set(id, { at: Date.now(), value });
+  value.catch(() => lookups.delete(id));
+  return value;
+}
+
 function year(item: ZoteroApiItem): string | null {
   return /\b(\d{4})\b/.exec((item.data.date as string) || "")?.[1] ?? null;
 }
@@ -54,7 +67,11 @@ function normalizeTitle(title: string): string {
 }
 
 /** The key as a dead item, or null when it is a live item of the library */
-export async function deadItem(key: string): Promise<DeadItem | null> {
+export function deadItem(key: string): Promise<DeadItem | null> {
+  return memo(`dead:${key}`, () => lookDeadItem(key));
+}
+
+async function lookDeadItem(key: string): Promise<DeadItem | null> {
   try {
     const item = await fetchItem(key);
     if (!item.data.deleted || isChild(item)) return null;
@@ -121,7 +138,11 @@ function replacement(item: ZoteroApiItem, certain: boolean): Replacement {
  * into, else (not certain) an item with the same title — `titleHint` when
  * Zotero no longer knows the dead item's title. Null when nothing fits.
  */
-export async function findReplacement(dead: DeadItem, titleHint: string | null = null): Promise<Replacement | null> {
+export function findReplacement(dead: DeadItem, titleHint: string | null = null): Promise<Replacement | null> {
+  return memo(`replacement:${dead.key}:${titleHint ?? ""}`, () => lookReplacement(dead, titleHint));
+}
+
+async function lookReplacement(dead: DeadItem, titleHint: string | null): Promise<Replacement | null> {
   const title = dead.title ?? titleHint;
   const replaces = (item: ZoteroApiItem) => extractRelatedKeys(item.data.relations, "dc:replaces").includes(dead.key);
 

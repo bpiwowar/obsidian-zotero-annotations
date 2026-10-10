@@ -18,6 +18,10 @@ export interface RepairEntry {
   mentions: Mention[];
   /** Text of the links to it, as search queries (see `linkTexts`) */
   texts: string[];
+  /** Last query searched by hand (kept when the report is reopened) */
+  query?: string;
+  /** The item picked for it, once relinked */
+  chosen?: { key: string; title: string; notes: number };
 }
 
 /** An item relinked for sure */
@@ -38,6 +42,14 @@ export interface RepairActions {
   showInZotero(key: string): void;
 }
 
+/** What a repair did and what is left to review; kept to reopen the report as it was */
+export interface RepairReport {
+  relinked: RelinkedItem[];
+  review: RepairEntry[];
+  /** Scroll position when the report was closed */
+  scroll?: number;
+}
+
 /** Notes listed per item */
 const MAX_MENTIONS = 5;
 
@@ -50,11 +62,18 @@ const MAX_QUERIES = 3;
 export class RepairModal extends Modal {
   constructor(
     app: App,
-    private relinked: RelinkedItem[],
-    private entries: RepairEntry[],
+    private report: RepairReport,
     private actions: RepairActions
   ) {
     super(app);
+  }
+
+  private get relinked(): RelinkedItem[] {
+    return this.report.relinked;
+  }
+
+  private get entries(): RepairEntry[] {
+    return this.report.review;
   }
 
   onOpen(): void {
@@ -88,15 +107,23 @@ export class RepairModal extends Modal {
         this.renderEntry(this.contentEl.createDiv({ cls: "zotero-annot-repair-entry" }), entry);
       }
     }
+    // Back where it was (results come from the cache, laid out at once)
+    const scroll = this.report.scroll;
+    if (scroll) window.setTimeout(() => (this.modalEl.scrollTop = scroll), 50);
   }
 
   onClose(): void {
+    this.report.scroll = this.modalEl.scrollTop;
     this.contentEl.empty();
   }
 
   private renderEntry(el: HTMLElement, entry: RepairEntry): void {
     const { dead } = entry;
     el.createEl("h4", { text: entry.title ?? `Item ${dead.key}` });
+    if (entry.chosen) {
+      this.renderChosen(el, entry);
+      return;
+    }
     el.createDiv({
       cls: "setting-item-description",
       text: `${dead.key} · ${dead.trashed ? "in the Zotero trash" : "no longer in Zotero"}`,
@@ -121,6 +148,10 @@ export class RepairModal extends Modal {
     const results = createDiv({ cls: "zotero-annot-repair-results" });
     const queries = [...new Set([entry.title, ...entry.texts].filter((q): q is string => !!q))];
     let input: HTMLInputElement | null = null;
+    const byHand = (query: string) => {
+      entry.query = query;
+      void search([query]);
+    };
     const search = async (list: string[]) => {
       results.empty();
       if (list.length === 0) return;
@@ -145,13 +176,13 @@ export class RepairModal extends Modal {
     };
     new Setting(el)
       .addSearch((s) => {
-        s.setPlaceholder("Title, author, year\u2026").setValue(queries[0] ?? "");
+        s.setPlaceholder("Title, author, year\u2026").setValue(entry.query ?? queries[0] ?? "");
         input = s.inputEl;
         s.inputEl.addEventListener("keydown", (evt) => {
-          if (evt.key === "Enter") void search([s.getValue()]);
+          if (evt.key === "Enter") byHand(s.getValue());
         });
       })
-      .addButton((b) => b.setButtonText("Search").onClick(() => void search([input?.value ?? ""])));
+      .addButton((b) => b.setButtonText("Search").onClick(() => byHand(input?.value ?? "")));
     // Each query on its own
     if (queries.length > 1) {
       const chips = el.createDiv({ cls: "zotero-annot-repair-queries" });
@@ -160,12 +191,21 @@ export class RepairModal extends Modal {
         const chip = chips.createEl("a", { cls: "zotero-annot-repair-query", text: query });
         chip.addEventListener("click", () => {
           if (input) input.value = query;
-          void search([query]);
+          byHand(query);
         });
       }
     }
     el.appendChild(results);
-    void search(queries.slice(0, MAX_QUERIES));
+    void search(entry.query !== undefined ? [entry.query] : queries.slice(0, MAX_QUERIES));
+  }
+
+  private renderChosen(el: HTMLElement, entry: RepairEntry): void {
+    const chosen = entry.chosen;
+    if (!chosen) return;
+    el.createDiv({
+      cls: "zotero-annot-repair-done",
+      text: `${entry.dead.key} \u2192 \u201c${chosen.title}\u201d (${chosen.key}), ${chosen.notes} note(s) updated`,
+    });
   }
 
   private renderResult(parent: HTMLElement, entryEl: HTMLElement, entry: RepairEntry, item: ZoteroItemSummary): void {
@@ -182,12 +222,10 @@ export class RepairModal extends Modal {
           .onClick(async () => {
             b.setDisabled(true);
             const notes = await this.actions.relink(entry.dead.key, item.key);
+            entry.chosen = { key: item.key, title: item.title, notes };
             entryEl.empty();
             entryEl.createEl("h4", { text: entry.title ?? `Item ${entry.dead.key}` });
-            entryEl.createDiv({
-              cls: "zotero-annot-repair-done",
-              text: `${entry.dead.key} → “${item.title}” (${item.key}), ${notes} note(s) updated`,
-            });
+            this.renderChosen(entryEl, entry);
           })
       );
   }

@@ -103,7 +103,7 @@ A Zotero child note, as Markdown
 
 ### Merged or deleted items
 
-When Zotero merges duplicates, it keeps one item and moves the others to the trash, so links to them stop working. For such a link, the sidebar shows **Find the current item** (also for an item in the trash); the "Repair links to deleted or merged Zotero items" commands check every link of the current note, or of the whole vault. Items merged in Zotero (Zotero records which item was kept) are relinked right away: every link to the old item in the vault points at the item kept, and its literature note moves to it (`zotero-key`, name). A report lists what was done, followed by the items Zotero has no record for: for each, the notes linking to it, and a search of your library — from its title and from the text of its links, e.g. "(Formal et al., 2022)" — where you pick the item its links should point at (an item with the same title comes first). Nothing is changed for these before you choose.
+When Zotero merges duplicates, it keeps one item and moves the others to the trash, so links to them stop working. For such a link, the sidebar shows **Find the current item** (also for an item in the trash); the "Repair links to deleted or merged Zotero items" commands check every link of the current note, or of the whole vault. Items merged in Zotero (Zotero records which item was kept) are relinked right away: every link to the old item in the vault points at the item kept, and its literature note moves to it (`zotero-key`, name). A report lists what was done, followed by the items Zotero has no record for: for each, the notes linking to it, and a search of your library — from its title and from the text of its links, e.g. "(Formal et al., 2022)" — where you pick the item its links should point at (an item with the same title comes first). Nothing is changed for these before you choose. Clicking a note in the report opens it, with a notice to go back to the report (or use "Show the last report of Zotero link repairs"); it comes back as you left it, searches included.
 
 ### On mobile
 
@@ -157,6 +157,7 @@ You can also set the `OBSIDIAN_PLUGIN_DIR` environment variable instead of using
 | Sync all literature notes with Zotero | Sends all edits, then refreshes all literature notes |
 | Repair links to deleted or merged Zotero items in current note | Points the note's links to items no longer in Zotero (merged, deleted) at the items that replaced them, in the whole vault |
 | Repair links to deleted or merged Zotero items in all notes | The same for every Zotero link of the vault |
+| Show the last report of Zotero link repairs | Reopens the last repair report as you left it |
 
 ## Known limitations
 
