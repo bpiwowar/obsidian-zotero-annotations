@@ -60,7 +60,7 @@ import {
   annotationLink,
   citationLink,
 } from "./note-format";
-import { ImageRef, checkConversion, imageSources, markdownToHtml } from "./note-html";
+import { ImageRef, checkConversion, imageSources, markdownToHtml, wikilinkPaths } from "./note-html";
 import { choose } from "./confirm-modal";
 import { ITEM_FIELDS, ItemField, mergeSets, pullField, readList, sameValue } from "./item-fields";
 
@@ -855,9 +855,16 @@ export class LiteratureNotes {
       const data = await this.app.vault.readBinary(file);
       images.set(src, { dataUrl: `data:${type};base64,${arrayBufferToBase64(data)}` });
     }
-    const html = markdownToHtml(body, { uri, images, paper: uri(`library/items/${bundle.item.key}`) });
+    // Wikilinks to literature notes cite their paper
+    const papers = new Map<string, string>();
+    for (const path of wikilinkPaths(body)) {
+      const note = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
+      const key = note && this.keyOf(note);
+      if (key) papers.set(path, `library/items/${key}`);
+    }
+    const html = markdownToHtml(body, { uri, images, papers, paper: uri(`library/items/${bundle.item.key}`) });
     // Nothing is sent when text or links would be lost
-    const problems = checkConversion(body, html, { images });
+    const problems = checkConversion(body, html, { images, papers });
     if (problems.length > 0) throw new ConversionError(problems, body, html);
     return html;
   }
@@ -1183,6 +1190,18 @@ export class LiteratureNotes {
       a.append(...Array.from(span.childNodes));
       span.replaceWith(a);
     }
+    // Citations of other papers with a literature note link to it (without a page: a wikilink has none)
+    let notes: Map<string, TFile> | null = null;
+    const literatureNote = (key: string): TFile | null => {
+      if (!notes) {
+        notes = new Map();
+        for (const file of this.app.vault.getMarkdownFiles()) {
+          const k = this.keyOf(file);
+          if (k && !notes.has(k)) notes.set(k, file);
+        }
+      }
+      return notes.get(key) ?? null;
+    };
     for (const span of Array.from(doc.querySelectorAll("span.citation"))) {
       const citation = parseDataAttribute<{ citationItems?: { uris?: string[]; locator?: string }[] }>(
         span,
@@ -1191,6 +1210,13 @@ export class LiteratureNotes {
       const cited = citation?.citationItems?.[0];
       const target = cited?.uris?.[0] && zoteroUriPath(cited.uris[0]);
       if (!target) continue;
+      const note = !cited.locator && target.startsWith("library/") ? literatureNote(target.split("/").pop() as string) : null;
+      const text = (span.textContent || "").replace(/\s+/g, " ").trim();
+      if (note && note.path !== sourcePath && text && !/[[\]|]/.test(text)) {
+        const path = this.app.metadataCache.fileToLinktext(note, sourcePath, true);
+        span.replaceWith(doc.createTextNode(token(text === path ? `[[${path}]]` : `[[${path}|${text}]]`)));
+        continue;
+      }
       const a = doc.body.createEl("a");
       a.setAttribute("href", citationLink(target, cited.locator));
       a.textContent = span.textContent;

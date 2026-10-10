@@ -98,7 +98,9 @@ everything needed to rebuild them for write-back (page, label, highlight rects, 
 links → `span.citation`, image alt links → `img[data-annotation]`; images that are attachments of
 the note keep `data-attachment-key`, others go as PNG/JPEG data URLs that Zotero's note editor imports
 when the note is opened) and PATCHed with `If-Unmodified-Since-Version`, inside the wrapper `div` of
-the note it replaces. Whether Zotero changed a note is decided by the hash of its HTML (`RegionState.html`;
+the note it replaces. Wikilinks to literature notes (resolved in `regionHtml`, `HtmlContext.papers`) become
+citations of their paper (the alias as text, parentheses kept around the `citation-item`), and `noteToMarkdown`
+turns citations without locator of a paper with a literature note into `[[note|text]]`. Whether Zotero changed a note is decided by the hash of its HTML (`RegionState.html`;
 Zotero bumps versions without changes); changed on both sides → `choose` modal (interactive push) or a
 one-time notice. Keyless regions, and the body of a paper without Zotero notes, become new Zotero notes.
 Pushes run on leaving the note, 30 s after the last edit, before each sync, and by command; a failed push

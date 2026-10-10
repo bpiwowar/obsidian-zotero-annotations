@@ -5,8 +5,9 @@
  *
  * Covers what Zotero notes can hold: paragraphs (a line break is `<br>`),
  * headings, lists, block quotes, code, math, tables, rules, and inline
- * emphasis, code, links and images. Obsidian-only syntax (wikilinks…) is
- * kept as text.
+ * emphasis, code, links and images. A wikilink to a literature note becomes
+ * a citation of its paper; other Obsidian-only syntax (wikilinks…) is kept
+ * as text.
  */
 import { NoteAnnotation, QuoteKind, parseAnnotationLink, parseCitationLink, parseImageAlt } from "./note-format";
 
@@ -25,6 +26,16 @@ export interface HtmlContext {
   images: Map<string, ImageRef>;
   /** URI of the paper, cited by the quotes of its attachments */
   paper?: string;
+  /** Wikilink paths (without `#heading`) of literature notes → their paper ("library/items/KEY") */
+  papers?: Map<string, string>;
+}
+
+/** Wikilinks (not embeds): group 1 the path, group 2 the alias */
+const WIKILINK_RE = /(?<!!)\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]+))?\]\]/g;
+
+/** Paths of the wikilinks of a note, to resolve before {@link markdownToHtml} (see `HtmlContext.papers`) */
+export function wikilinkPaths(md: string): string[] {
+  return [...new Set(Array.from(md.matchAll(WIKILINK_RE), (m) => m[1].trim()))];
 }
 
 const LIST_RE = /^( *)([-*+]|\d{1,9}[.)])( +|$)/;
@@ -284,7 +295,9 @@ class Converter {
         continue;
       }
       if (rest.startsWith("[[") && (m = /^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/.exec(rest))) {
-        out += esc(m[2] ?? m[1]);
+        // A literature note is a citation of its paper
+        const paper = this.ctx.papers?.get(m[1].split("#")[0].trim());
+        out += paper ? this.citation(paper, undefined, m[2] ?? m[1]) : esc(m[2] ?? m[1]);
         i += m[0].length;
         continue;
       }
@@ -351,14 +364,20 @@ class Converter {
     if (quote) return this.quote(label, quote.target, quote.annotation, quote.kind);
 
     const cited = parseCitationLink(href);
-    const paren = /^\(([\s\S]*)\)$/.exec(label.trim());
-    if (cited && paren) {
-      const item: Record<string, unknown> = { uris: [this.ctx.uri(cited.target)] };
-      if (cited.locator) item.locator = cited.locator;
-      const citation = { citationItems: [item], properties: {} };
-      return `<span class="citation" data-citation="${dataAttr(citation)}">(<span class="citation-item">${this.inline(paren[1])}</span>)</span>`;
-    }
+    if (cited && /^\([\s\S]*\)$/.test(label.trim())) return this.citation(cited.target, cited.locator, label);
     return `<a href="${esc(href)}" rel="noopener noreferrer nofollow">${this.inline(label)}</a>`;
+  }
+
+  /** A citation of `target`; its text in parentheses, as Zotero writes it, keeps them around the item */
+  private citation(target: string, locator: string | undefined, text: string): string {
+    const item: Record<string, unknown> = { uris: [this.ctx.uri(target)] };
+    if (locator) item.locator = locator;
+    const data = dataAttr({ citationItems: [item], properties: {} });
+    const paren = /^\(([\s\S]*)\)$/.exec(text.trim());
+    const body = paren
+      ? `(<span class="citation-item">${this.inline(paren[1])}</span>)`
+      : `<span class="citation-item">${this.inline(text.trim())}</span>`;
+    return `<span class="citation" data-citation="${data}">${body}</span>`;
   }
 
   private annotationData(target: string, annotation: NoteAnnotation): NoteAnnotation & { citationItem?: unknown } {
@@ -423,7 +442,7 @@ function wordCounts(text: string): Map<string, number> {
  * HTML must have as many links, quotes, citations and images as the
  * Markdown. Returns what is wrong (empty when the conversion looks right).
  */
-export function checkConversion(md: string, html: string, ctx: Pick<HtmlContext, "images">): string[] {
+export function checkConversion(md: string, html: string, ctx: Pick<HtmlContext, "images" | "papers">): string[] {
   const problems: string[] = [];
 
   // Code (fenced, inline) holds no links
@@ -433,7 +452,9 @@ export function checkConversion(md: string, html: string, ctx: Pick<HtmlContext,
   const embeds = [...noCode.matchAll(/!\[\[([^\]|#]+)/g)].filter((m) => ctx.images.has(m[1].trim())).length;
   const images = [...noCode.matchAll(/!\[[^\]]*\]\((?:<([^>]*)>|([^\s()]*))\)/g)];
   const sentImages = images.filter((m) => ctx.images.has(decodeImageSource(m[1] ?? m[2]))).length;
-  const expectedLinks = (noCode.match(DEST) || []).length - images.length + sentImages + embeds;
+  // Wikilinks to literature notes become citations
+  const cited = Array.from(noCode.matchAll(WIKILINK_RE)).filter((m) => ctx.papers?.has(m[1].trim())).length;
+  const expectedLinks = (noCode.match(DEST) || []).length - images.length + sentImages + embeds + cited;
   const links = (html.match(/<a\s|<span class="(?:highlight|underline|citation)"|<img\s/g) || []).length;
   if (links !== expectedLinks) problems.push(`${expectedLinks} links or images in Obsidian, ${links} in the converted note`);
 
