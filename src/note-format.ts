@@ -290,6 +290,26 @@ export function parseRegions(text: string): NoteRegion[] {
 /** Frontmatter property naming the Zotero note a literature note holds without markers */
 export const SINGLE_NOTE_PROPERTY = "zotero-note";
 
+/** Frontmatter property identifying a literature note of this plugin: the item key */
+export const ITEM_PROPERTY = "zotero-item";
+
+/** Frontmatter property of ZotLit's literature notes (and of this plugin's before 0.7) */
+export const ZOTLIT_KEY_PROPERTY = "zotero-key";
+
+/** ZotLit's managed section, re-rendered by ZotLit from its template (group 1: its text) */
+const ZOTLIT_SECTION_RE = /%%zt-managed%%\n?([\s\S]*?)\n?%%\/zt-managed%%/g;
+
+/** Whether a text holds a section managed by ZotLit */
+export function hasZotlitSection(text: string): boolean {
+  ZOTLIT_SECTION_RE.lastIndex = 0;
+  return ZOTLIT_SECTION_RE.test(text);
+}
+
+/** ZotLit's managed sections turned into plain text (`keep`), or removed */
+export function convertZotlitSections(text: string, keep: boolean): string {
+  return text.replace(ZOTLIT_SECTION_RE, (_, body: string) => (keep ? body.trim() : ""));
+}
+
 /** The regions of a literature note and where its body starts */
 export interface NoteLayout {
   regions: NoteRegion[];
@@ -321,7 +341,8 @@ export function noteLayout(full: string): NoteLayout {
     // unreadable frontmatter
   }
   const body = text.slice(info.contentStart);
-  if (typeof key !== "string" || !/^[A-Z0-9]{8}$/.test(key) || !body.trim()) {
+  // A body with ZotLit's section is not a Zotero note: ZotLit rewrites it
+  if (typeof key !== "string" || !/^[A-Z0-9]{8}$/.test(key) || !body.trim() || hasZotlitSection(body)) {
     return { regions: [], bare: false, contentStart: info.contentStart, contentEnd };
   }
   return {

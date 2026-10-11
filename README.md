@@ -86,11 +86,11 @@ A template can use `{title}`, `{authors}` ("Doe et al."), `{year}`, `{citation}`
 
 ## Literature notes
 
-Turn on **Settings → Zotero Annotations → Literature notes** to keep one note per paper in the vault. A literature note is identified by its `zotero-key` frontmatter property (as in [ZotLit](https://github.com/aidenlx/zotlit)) and looks like this:
+Turn on **Settings → Zotero Annotations → Literature notes** to keep one note per paper in the vault. A literature note is identified by its `zotero-item` frontmatter property and looks like this:
 
 ```markdown
 ---
-zotero-key: ABCD1234
+zotero-item: ABCD1234
 title: …
 citekey: …
 zotero: zotero://select/library/items/ABCD1234
@@ -126,11 +126,21 @@ A Zotero child note, as Markdown
 - **Your edits are safe**: text outside the `zt-note` sections is never touched (a note holding a single Zotero note has no such text: the whole body is the note). A note or `zt-note` section you edited in Obsidian is not overwritten: it is sent to Zotero (when you leave the note, after 30 s without typing, or with "Send literature note edits to Zotero"; the first time, Zotero asks for permission — choose "Always allow"). If the note changed in Zotero too, you choose which version to keep. A new `%%zt-note%%` section (without key), or the text of a note for a paper without Zotero notes, becomes a new Zotero note. Images go along (PNG and JPEG; Zotero imports them when the note is opened in Zotero). Deleting a `zt-note` section (or emptying a single-note body) keeps it out of the note. Holding exactly one Zotero note and nothing else, a note drops its markers.
 - **Links between papers**: in a Zotero note section, a wikilink to another literature note — `[[RePo Language Models with Context Re-Positioning – U8NBCFLN|RePo: Language Models with Context Re-Positioning]]` — becomes a citation of its paper in Zotero, with the link's text (or the note name). The other way round, a Zotero citation of a paper that has a literature note (without a page number) becomes a wikilink to that note, with the citation's text: `[[… – U8NBCFLN|(Li et al., 2025)]]`. Other citations stay `zotero://select` links.
 - **Images** inside Zotero notes are copied to the image folder.
+- **Text not written by the plugin** (a migrated ZotLit note, for instance) goes to Zotero only when you say so: "Send literature note edits to Zotero" asks whether it becomes a Zotero note (or stays in Obsidian only).
 - **Offline copy**: a literature note ends with a `zotero-annotations` block holding what the sidebar shows (paper details and annotations, as JSON; image annotations are copied to the image folder). It is shown as a single line ("12 Zotero annotations, copy of …") and cannot be edited in Obsidian. When Zotero cannot be reached — on your phone, or with Zotero closed — the sidebar shows this copy, marked "Offline copy". It is updated with the note, when the annotations change in Zotero.
+
+### Coming from ZotLit
+
+[ZotLit](https://github.com/PKM-er/obsidian-zotlit) identifies its literature notes by `zotero-key`; this plugin uses `zotero-item`, so the two never manage the same note (before version 0.7, this plugin used `zotero-key` too: its own notes — named "… – KEY", with the offline copy, without ZotLit's `%%zt-managed%%` section — are moved to `zotero-item` on the first start, the others are left alone).
+
+A ZotLit note is only read: when it is open, the sidebar shows its paper, with two buttons:
+
+- **Migrate…** makes it a note of this plugin: `zotero-key` becomes `zotero-item`, ZotLit's generated section (between `%%zt-managed%%` markers) is kept as plain text or removed (the sidebar shows the annotations), the note can be moved to the notes folder and renamed "short title – KEY", then it is refreshed from Zotero (properties, Zotero notes, offline copy). Its text is not sent to Zotero unless you say so. "Migrate ZotLit literature notes…" does it for every ZotLit note of the vault, "Migrate this ZotLit literature note…" for the open one. Notes of papers that have a note of this plugin already, of group libraries, and the Zotero notes ZotLit imported as notes of their own (`zotero-note-key`) are left as they are.
+- **Create own note** creates a separate note of this plugin, in its folder; the ZotLit note stays ZotLit's.
 
 ### Merged or deleted items
 
-When Zotero merges duplicates, it keeps one item and moves the others to the trash, so links to them stop working. For such a link, the sidebar shows **Find the current item** (also for an item in the trash); the "Repair links to deleted or merged Zotero items" commands check every paper link of the current note, or of the whole vault — malformed keys included (a key that is not 8 characters). Items merged in Zotero (Zotero records which item was kept) are relinked right away: every link to the old item in the vault points at the item kept, and its literature note moves to it (`zotero-key`, name) and is refreshed from it — unless the item kept has a literature note already, in which case the report says so.
+When Zotero merges duplicates, it keeps one item and moves the others to the trash, so links to them stop working. For such a link, the sidebar shows **Find the current item** (also for an item in the trash); the "Repair links to deleted or merged Zotero items" commands check every paper link of the current note, or of the whole vault — malformed keys included (a key that is not 8 characters). Items merged in Zotero (Zotero records which item was kept) are relinked right away: every link to the old item in the vault points at the item kept, and its literature note moves to it (`zotero-item`, name) and is refreshed from it — unless the item kept has a literature note already, in which case the report says so.
 
 A report lists what was done, followed by the items Zotero has no record for. For each one it shows what is known of it (from Zotero's trash, else from its literature note: title, authors, year; else from the text of its links), its literature note, the notes linking to it, and a search of your library. Select the queries to combine — title, first author and year, the titles and citations of its links, e.g. "Suslik 2026" — or type one; the item most like it is marked "best match". You can also search the web for it (Google Scholar, Semantic Scholar, Google). Pick the item with **Use this item**; nothing changes before. Items are searched when the report opens, unless you turn **Search automatically** off — then **Search all** searches them all at once. Clicking a note in the report opens it, with a notice to go back to the report (or use "Show the last report of Zotero link repairs"); it comes back as you left it, searches included. Its text can be selected and copied.
 
@@ -185,6 +195,8 @@ You can also set the `OBSIDIAN_PLUGIN_DIR` environment variable instead of using
 | Refresh all literature notes from Zotero | Re-reads every literature note from Zotero, changed or not (sections edited in Obsidian are kept); also adds the offline copy to older notes |
 | Send all literature note edits to Zotero | Sends the edited sections of every literature note to Zotero, asking when a note changed on both sides |
 | Sync all literature notes with Zotero | Sends all edits, then refreshes all literature notes |
+| Migrate ZotLit literature notes… | Makes the ZotLit notes of the vault notes of this plugin (see [Coming from ZotLit](#coming-from-zotlit)) |
+| Migrate this ZotLit literature note… | The same for the open note |
 | Repair links to deleted or merged Zotero items in current note | Points the note's links to items no longer in Zotero (merged, deleted) at the items that replaced them, in the whole vault |
 | Repair links to deleted or merged Zotero items in all notes | The same for every Zotero link of the vault |
 | Show the last report of Zotero link repairs | Reopens the last repair report as you left it |

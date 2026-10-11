@@ -122,6 +122,12 @@
   margin-top: 8px;
 }
 
+.view-content .zotero-annot-zotlit-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
 .view-content .zotero-annot-list {
   padding: 8px 0;
   overflow-y: auto;

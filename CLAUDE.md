@@ -23,6 +23,7 @@ src/
   zotero-search.ts     # Library search with fields (author:, tag:…) → API params + checks; link label templates
   search-modal.ts      # Modal: search Zotero, one-click insert of a link to an item (label from a template)
   note-format.ts       # Literature note text: file names (short title – KEY), header, zt-note regions / single-note layout
+  zotlit-modal.ts      # Migration of ZotLit literature notes (zotero-key) to notes of this plugin (zotero-item)
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
 esbuild.config.mjs     # Build script (esbuild)
@@ -90,7 +91,7 @@ following the cursor, exactly as when it is pinned (`AnnotationView.ignoresCurso
 
 ### Literature notes
 
-`literature-notes.ts` keeps one note per paper (frontmatter `zotero-key`, as ZotLit). The header
+`literature-notes.ts` keeps one note per paper (frontmatter `zotero-item`; see "ZotLit" below). The header
 (title, Zotero and file links) is written once at creation; annotations are not copied (the
 sidebar shows them and follows the open literature note); each `%%zt-note: KEY%%` region mirrors a Zotero child note (markers only when needed: a body
 that is exactly one Zotero note has none, its key in the `zotero-note` property — `noteLayout`) and is
@@ -118,6 +119,19 @@ for one `Zotero-Server-ID`. Write access (`ZoteroWriter`, Zotero 10+) needs a ke
 `/local/authorize`; embedded-image uploads are refused by Zotero.
 Bulk commands: "Refresh all" (`refreshAll`, a full `doSync` over every tracked note, edited regions kept),
 "Send all" (`pushAll`, interactive) and "Sync all" (send, then refresh); the incremental sync is "Sync changed".
+
+### ZotLit
+
+ZotLit identifies its literature notes by `zotero-key` (`KEYgN` for groups), which this plugin used before 0.7: the
+two plugins then rewrote each other's notes (ZotLit's overwrite replaces the body, its managed properties fight ours).
+Identities are now disjoint: `keyOf` reads `zotero-item` (or `zotero-key` on a note tracked at that path, until moved),
+`zotlitKeyOf` the ZotLit notes, `paperOf` either — only for reading (the sidebar follows them, wikilinks cite them,
+offline `open-pdf` fallback). `upgradeNotes` moves our older notes once (`SyncState.identity`, retried until the metadata
+cache was complete): only notes surely ours — named "… KEY", tracked or with the offline copy, no `%%zt-managed%%`.
+`migrateZotlit` (`ZotlitMigrationModal`; sidebar bar "Migrate…/Create own note" while a ZotLit note is open) converts
+`%%zt-managed%%` to plain text or drops it, optionally moves/renames, and refreshes. A note first tracked by a refresh
+(not `create`) is `adopted: "ask"`: its body becomes a Zotero note only when an interactive push is confirmed ("local":
+never). A body holding a `%%zt-managed%%` section is never a single-note body nor pushed as one.
 
 ### Item fields as properties
 

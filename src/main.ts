@@ -24,6 +24,7 @@ import { DeadItem, deadItem, deadItems, findReplacement, linkTexts, searchQuerie
 import { RelinkResult, RelinkedItem, RepairEntry, RepairModal, RepairReport } from "./repair-modal";
 import { ZoteroSearchModal } from "./search-modal";
 import { parseTemplates } from "./zotero-search";
+import { ZotlitMigrationModal } from "./zotlit-modal";
 
 /** When literature notes get created */
 type CreateMode = "manual" | "cursor" | "linked";
@@ -181,6 +182,11 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       view.literatureNotesEnabled = () => this.settings.literatureNotes;
       view.isEditingLiteratureNote = (itemKey) => this.activeNoteKey() === itemKey;
       view.openLiteratureNote = (itemKey) => void this.openLiteratureNote(itemKey);
+      view.zotlitNote = (itemKey) => {
+        const file = Platform.isDesktop ? this.app.workspace.getActiveFile() : null;
+        return file && this.literature.zotlitKeyOf(file) === itemKey && !this.literature.findNote(itemKey) ? file : null;
+      };
+      view.migrateZotlit = (file) => this.migrateZotlit(file);
       view.onRefresh = (itemKey, overwrite) => void this.refreshItem(itemKey, overwrite);
       view.onRecover = Platform.isDesktop ? (itemKey) => void this.recoverItem(itemKey) : null;
       return view;
@@ -314,6 +320,27 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       });
 
       this.addCommand({
+        id: "migrate-zotlit-notes",
+        name: "Migrate ZotLit literature notes\u2026",
+        checkCallback: (checking) => {
+          if (!this.settings.literatureNotes) return false;
+          if (!checking) this.migrateZotlit(null);
+          return true;
+        },
+      });
+
+      this.addCommand({
+        id: "migrate-zotlit-note",
+        name: "Migrate this ZotLit literature note\u2026",
+        checkCallback: (checking) => {
+          const file = this.app.workspace.getActiveFile();
+          if (!this.settings.literatureNotes || !file || !this.literature.zotlitKeyOf(file)) return false;
+          if (!checking) this.migrateZotlit(file);
+          return true;
+        },
+      });
+
+      this.addCommand({
         id: "sync-literature-notes",
         name: "Sync changed literature notes with Zotero",
         checkCallback: (checking) => {
@@ -383,6 +410,13 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       this.registerEvent(this.app.workspace.on("layout-change", () => this.removeDuplicateViews()));
       this.registerFollowNoteEvents();
       if (Platform.isDesktop) {
+        // Again once the metadata cache is complete, if it was not yet
+        void this.upgradeLiteratureNotes();
+        const resolved = this.app.metadataCache.on("resolved", () => {
+          this.app.metadataCache.offref(resolved);
+          void this.upgradeLiteratureNotes();
+        });
+        this.registerEvent(resolved);
         this.registerLiteratureNoteEvents();
         this.registerAnnotationDrop();
         this.restartSync();
@@ -606,11 +640,19 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     return file ? this.literature.keyOf(file) : null;
   }
 
-  /** The paper of the active note, when the sidebar should follow it */
+  /** The paper of the active note (also a ZotLit one, only shown), when the sidebar should follow it */
   private followedNoteKey(): string | null {
     if (!this.settings.followNote) return null;
     const file = this.app.workspace.getActiveFile();
-    return file ? this.literature.keyOf(file) : null;
+    return file ? this.literature.paperOf(file) : null;
+  }
+
+  /** Opens the migration of ZotLit literature notes: all of them, or `file` only */
+  private migrateZotlit(file: TFile | null): void {
+    new ZotlitMigrationModal(this.app, this.literature, this.settings.notesFolder, file, () => {
+      this.getView()?.updateZotlitBar();
+      this.showActiveNotePaper();
+    }).open();
   }
 
   /** Shows the paper of the active literature note in the sidebar */
@@ -621,6 +663,22 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
       await this.ensureSidebarOpen();
       await this.loadAnnotations(key);
     })();
+  }
+
+  /** Notes of older versions: `zotero-key` → `zotero-item` (once, see `LiteratureNotes.upgradeNotes`) */
+  private async upgradeLiteratureNotes(): Promise<void> {
+    try {
+      const moved = await this.literature.upgradeNotes();
+      if (moved > 0) {
+        new Notice(
+          `Zotero Annotations: ${moved} literature note(s) are now identified by the zotero-item property ` +
+            "(zotero-key is left to ZotLit).",
+          10_000
+        );
+      }
+    } catch (e) {
+      console.warn("Zotero Annotations: could not move literature notes to zotero-item", e);
+    }
   }
 
   /** Re-reads a literature note from Zotero, and the sidebar's annotations of its paper */
@@ -641,14 +699,16 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", () => {
         this.getView()?.updateNotesVisibility();
+        this.getView()?.updateZotlitBar();
         this.showActiveNotePaper();
       })
     );
-    // A note just created gets its zotero-key after it is opened
+    // A note just created gets its zotero-item after it is opened
     this.registerEvent(
       this.app.metadataCache.on("changed", (file) => {
         if (file !== this.app.workspace.getActiveFile()) return;
         this.getView()?.updateNotesVisibility();
+        this.getView()?.updateZotlitBar();
         this.showActiveNotePaper();
       })
     );
@@ -1092,7 +1152,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     if (!paper) {
       // Zotero not reachable: the literature note naming this PDF
       const note = this.literature.findNoteOfAttachment(link.key);
-      paper = note && this.literature.keyOf(note);
+      paper = note && this.literature.paperOf(note);
     }
     if (paper) this.attachmentPapers.set(link.key, paper);
     return paper;
@@ -1310,7 +1370,7 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
       },
       {
         name: "Follow literature notes",
-        desc: "When a note with a zotero-key property is open, show its paper in the sidebar.",
+        desc: "When a literature note is open (zotero-item property, or zotero-key for ZotLit's), show its paper in the sidebar.",
         control: { type: "toggle", key: "followNote", defaultValue: DEFAULT_SETTINGS.followNote },
       },
       {

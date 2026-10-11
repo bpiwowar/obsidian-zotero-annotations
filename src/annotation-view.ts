@@ -1,5 +1,6 @@
 import {
   ItemView,
+  TFile,
   WorkspaceLeaf,
   setIcon,
   sanitizeHTMLToDom,
@@ -134,6 +135,11 @@ export class AnnotationView extends ItemView {
   /** Opens (creating it if needed) the literature note of an item */
   openLiteratureNote: (itemKey: string) => void = () => undefined;
   /** Re-fetches the item from Zotero (and its literature note, if any) */
+  /** The ZotLit literature note being edited, when it is one of this item (read-only here) */
+  zotlitNote: (itemKey: string) => TFile | null = () => null;
+  /** Opens the migration of a ZotLit literature note */
+  migrateZotlit: (file: TFile) => void = () => undefined;
+  private zotlitBar: HTMLElement | null = null;
   /** `overwrite`: shift-click, the literature note is replaced by Zotero's version */
   onRefresh: (itemKey: string, overwrite: boolean) => void = () => undefined;
   /** Looks for the item that replaced a deleted or merged one, and repairs the links (null: not available) */
@@ -423,6 +429,36 @@ export class AnnotationView extends ItemView {
    * Returns the content div to fill in, and the label span (so sections whose
    * count is only known asynchronously can update their title).
    */
+  /**
+   * While a ZotLit literature note of the item is edited: says that it is only
+   * read, and offers to migrate it or to create a note of this plugin
+   */
+  updateZotlitBar(): void {
+    const bar = this.zotlitBar;
+    if (!bar?.isConnected) return;
+    bar.empty();
+    const itemKey = this.currentItemKey;
+    const file = itemKey && this.literatureNotesEnabled() ? this.zotlitNote(itemKey) : null;
+    bar.toggle(file !== null);
+    if (!file || !itemKey) return;
+    const line = bar.createDiv({ cls: "zotero-annot-offline" });
+    setIcon(line.createSpan(), "info");
+    line.appendText(" ZotLit literature note: shown, never changed by this plugin");
+    const buttons = bar.createDiv({ cls: "zotero-annot-zotlit-buttons" });
+    buttons
+      .createEl("button", {
+        text: "Migrate\u2026",
+        attr: { "aria-label": "Make it a note of this plugin, kept in sync with Zotero (ZotLit stops managing it)" },
+      })
+      .addEventListener("click", () => this.migrateZotlit(file));
+    buttons
+      .createEl("button", {
+        text: "Create own note",
+        attr: { "aria-label": "Create a separate literature note of this plugin, in its own folder" },
+      })
+      .addEventListener("click", () => this.openLiteratureNote(itemKey));
+  }
+
   /** Hides the Notes section while the item's literature note is being edited */
   updateNotesVisibility(): void {
     if (!this.notesSection?.isConnected || !this.currentItemKey) return;
@@ -693,6 +729,8 @@ export class AnnotationView extends ItemView {
           offline.appendText(` Offline copy, ${new Date(this.cachedAt).toLocaleString()}`);
           offline.setAttribute("title", "Zotero cannot be reached: this is the copy kept in the literature note");
         }
+        this.zotlitBar = header.createDiv({ cls: "zotero-annot-zotlit" });
+        this.updateZotlitBar();
 
         // Abstract with toggle (collapsed by default)
         if (this.itemInfo.abstractNote) {

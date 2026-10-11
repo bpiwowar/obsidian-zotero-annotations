@@ -2,7 +2,7 @@
  * Literature notes: one vault note per Zotero paper, kept in sync with Zotero.
  *
  *     ---
- *     zotero-key: ABCD1234          ← identity
+ *     zotero-item: ABCD1234         ← identity (ZotLit's notes have zotero-key)
  *     title, citekey                ← refreshed from Zotero
  *     zotero: zotero://select/…     ← link to the item
  *     zotero-pdf: zotero://open-pdf/…  ← its PDF in Zotero's reader
@@ -53,6 +53,10 @@ import {
   notePath,
   NoteRegion,
   SINGLE_NOTE_PROPERTY,
+  ITEM_PROPERTY,
+  ZOTLIT_KEY_PROPERTY,
+  convertZotlitSections,
+  hasZotlitSection,
   noteLayout,
   noteRegion,
   NoteAnnotation,
@@ -104,15 +108,28 @@ interface TrackedNote {
   fileHash: string;
   /** Item fields mirrored as properties (authors, keywords): value when last synced */
   fields?: Record<string, string[]>;
+  /**
+   * A note this plugin did not create (migrated from ZotLit, or tracked again
+   * after the state was lost): its text becomes a Zotero note only when the
+   * user says so ("ask"), or never ("local")
+   */
+  adopted?: "ask" | "local";
 }
 
 interface SyncState {
   version: number;
+  /** Identity property of the notes, once the notes of older versions (`zotero-key`) were moved to it */
+  identity?: string;
   serverId: string;
   libraryVersion: number;
   items: Record<string, TrackedNote>;
 }
 
+
+/** A Zotero item key (8 characters) read from a property, else null */
+function validKey(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Z0-9]{8}$/.test(value) ? value : null;
+}
 
 function hash(text: string): string {
   return crypto().createHash("sha1").update(text.trim()).digest("hex");
@@ -243,6 +260,26 @@ interface Conflict {
   note: ZoteroApiItem;
 }
 
+/** ZotLit literature notes found in the vault */
+export interface ZotlitScan {
+  /** Notes a migration converts */
+  notes: TFile[];
+  /** Notes of papers that have a note of this plugin already (left as they are) */
+  existing: TFile[];
+  /** Notes of group library items (not supported) */
+  groups: TFile[];
+  /** Zotero notes imported by ZotLit as notes of their own (`zotero-note-key`) */
+  imported: TFile[];
+}
+
+/** How ZotLit notes are migrated */
+export interface ZotlitMigration {
+  /** ZotLit's managed section: kept as plain text (ZotLit no longer updates it), or removed */
+  zotlitSection: "text" | "remove";
+  /** Moved to the notes folder, named as this plugin names notes */
+  move: boolean;
+}
+
 export class LiteratureNotes {
   private state: SyncState = { version: STATE_VERSION, serverId: "", libraryVersion: 0, items: {} };
   private stateLoaded: Promise<void> | null = null;
@@ -271,7 +308,8 @@ export class LiteratureNotes {
     const tracked = this.state.items[itemKey];
     if (tracked) {
       const file = this.app.vault.getAbstractFileByPath(tracked.path);
-      if (file instanceof TFile && this.keyOf(file) === itemKey) return file;
+      // The metadata cache may lag behind a move to `zotero-item`
+      if (file instanceof TFile && (this.keyOf(file) ?? this.zotlitKeyOf(file)) === itemKey) return file;
     }
     for (const file of this.app.vault.getMarkdownFiles()) {
       if (this.keyOf(file) === itemKey) return file;
@@ -289,15 +327,142 @@ export class LiteratureNotes {
     return null;
   }
 
-  /** The Zotero item key of a literature note, or null for other notes */
+  /**
+   * The Zotero item key of a literature note of this plugin, or null for
+   * other notes. A note still identified by `zotero-key` (older versions, not
+   * moved yet: see {@link upgradeNotes}) is one when it is tracked.
+   */
   keyOf(file: TFile): string | null {
-    const key: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.["zotero-key"];
-    return typeof key === "string" && /^[A-Z0-9]{8}$/.test(key) ? key : null;
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!fm) return null;
+    if (fm[ITEM_PROPERTY] !== undefined) return validKey(fm[ITEM_PROPERTY]);
+    const legacy = validKey(fm[ZOTLIT_KEY_PROPERTY]);
+    return legacy && this.state.items[legacy]?.path === file.path ? legacy : null;
+  }
+
+  /** The item key of a ZotLit literature note (not one of this plugin), or null */
+  zotlitKeyOf(file: TFile): string | null {
+    const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+    if (!fm || fm[ITEM_PROPERTY] !== undefined) return null;
+    const key = validKey(fm[ZOTLIT_KEY_PROPERTY]);
+    return key && this.state.items[key]?.path !== file.path ? key : null;
+  }
+
+  /** The paper of a literature note, of this plugin or of ZotLit (only read: shown, cited) */
+  paperOf(file: TFile): string | null {
+    return this.keyOf(file) ?? this.zotlitKeyOf(file);
   }
 
   // -------------------------------------------------------------------------
   // Create / update
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Identity: `zotero-item` (this plugin), `zotero-key` (ZotLit, older versions)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Moves the notes made by older versions of this plugin from `zotero-key`
+   * (ZotLit's property) to `zotero-item`, once. Only notes surely written by
+   * this plugin are: tracked or ending with the offline copy, named after
+   * their key, without ZotLit's managed section. Others keep working while
+   * tracked (see {@link keyOf}); "Migrate ZotLit literature notes" moves them.
+   */
+  async upgradeNotes(): Promise<number> {
+    await this.loadState();
+    return this.locked("upgrade", async () => {
+      if (this.state.identity === ITEM_PROPERTY) return 0;
+      let moved = 0;
+      // Done once every note was seen: the metadata cache may still be filling up on startup
+      let complete = true;
+      for (const file of this.app.vault.getMarkdownFiles()) {
+        const cached = this.app.metadataCache.getFileCache(file);
+        if (!cached) complete = false;
+        if (await this.upgradeNote(file, cached?.frontmatter)) moved++;
+      }
+      if (complete) {
+        this.state.identity = ITEM_PROPERTY;
+        await this.saveState();
+      }
+      return moved;
+    });
+  }
+
+  /** Moves a note surely of this plugin to `zotero-item` (see {@link upgradeNotes}); true when done */
+  private async upgradeNote(file: TFile, fm: Record<string, unknown> | undefined): Promise<boolean> {
+    const key = fm && fm[ITEM_PROPERTY] === undefined ? validKey(fm[ZOTLIT_KEY_PROPERTY]) : null;
+    // Named as this plugin names notes ("short title – KEY", "KEY (2)"…): ZotLit uses citation keys
+    if (!key || !new RegExp(`(^|\\s)${key}( \\(\\d+\\))?$`).test(file.basename)) return false;
+    const text = await this.app.vault.cachedRead(file);
+    const tracked = this.state.items[key]?.path === file.path;
+    if (!(tracked || splitCache(text).json !== null) || hasZotlitSection(text)) return false;
+    await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+      fm[ITEM_PROPERTY] = key;
+      delete fm[ZOTLIT_KEY_PROPERTY];
+    });
+    return true;
+  }
+
+  /** The ZotLit literature notes of the vault (`zotero-key`), and what a migration would leave out */
+  async scanZotlit(): Promise<ZotlitScan> {
+    await this.loadState();
+    const scan: ZotlitScan = { notes: [], existing: [], groups: [], imported: [] };
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (!fm) continue;
+      if (fm["zotero-note-key"] !== undefined) scan.imported.push(file);
+      if (fm[ITEM_PROPERTY] !== undefined || typeof fm[ZOTLIT_KEY_PROPERTY] !== "string") continue;
+      const key = validKey(fm[ZOTLIT_KEY_PROPERTY]);
+      if (!key) scan.groups.push(file);
+      else if (this.ownNote(key, file)) scan.existing.push(file);
+      else scan.notes.push(file);
+    }
+    return scan;
+  }
+
+  /** The note of this plugin for an item, other than `except` */
+  private ownNote(itemKey: string, except: TFile): TFile | null {
+    const tracked = this.state.items[itemKey];
+    if (tracked && tracked.path !== except.path) {
+      const file = this.app.vault.getAbstractFileByPath(tracked.path);
+      if (file instanceof TFile) return file;
+    }
+    return this.app.vault.getMarkdownFiles().find((f) => f !== except && this.keyOf(f) === itemKey) ?? null;
+  }
+
+  /**
+   * Makes a ZotLit literature note a note of this plugin: `zotero-key` →
+   * `zotero-item`, ZotLit's managed section kept as plain text or removed,
+   * optionally moved to this plugin's folder and name, then refreshed from
+   * Zotero (its Zotero notes added, properties, offline copy). Its text only
+   * goes to Zotero when the user says so (`TrackedNote.adopted`). False when
+   * the paper already has a note of this plugin (nothing done).
+   */
+  async migrateZotlit(file: TFile, options: ZotlitMigration): Promise<boolean> {
+    const key = validKey(this.app.metadataCache.getFileCache(file)?.frontmatter?.[ZOTLIT_KEY_PROPERTY]);
+    if (!key) throw new Error(`${file.path} has no zotero-key`);
+    await this.loadState();
+    return this.locked(key, async () => {
+      if (this.ownNote(key, file)) return false;
+      const bundle = await this.fetchBundle(key);
+      if (!bundle) throw new Error(`item ${key} not found in Zotero`);
+      await this.app.vault.process(file, (text) => convertZotlitSections(text, options.zotlitSection === "text"));
+      await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+        fm[ITEM_PROPERTY] = key;
+        delete fm[ZOTLIT_KEY_PROPERTY];
+      });
+      if (options.move) {
+        const { notesFolder, titleOptions } = this.settings();
+        const path = normalizePath(`${notePath(bundle.item, normalizePath(notesFolder || "/"), titleOptions)}.md`);
+        if (path !== file.path && !this.app.vault.getAbstractFileByPath(path)) {
+          await this.ensureFolder(path.split("/").slice(0, -1).join("/"));
+          await this.app.fileManager.renameFile(file, path);
+        }
+      }
+      await this.refresh(key, file);
+      return true;
+    });
+  }
 
   /** Opens the literature note of an item, creating it first if needed. */
   async open(itemKey: string): Promise<void> {
@@ -331,8 +496,8 @@ export class LiteratureNotes {
 
   /**
    * Called when a note is opened: refreshes it if it is a literature note of
-   * this plugin not refreshed recently. Notes with a zotero-key made by other
-   * tools are only touched by an explicit refresh.
+   * this plugin not refreshed recently. Notes not tracked (state lost) are
+   * only touched by an explicit refresh.
    */
   async onOpen(file: TFile): Promise<void> {
     const key = this.keyOf(file);
@@ -370,7 +535,7 @@ export class LiteratureNotes {
       if (!file) return null;
       if (this.findNote(newKey)) return { file, moved: false };
       await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-        fm["zotero-key"] = newKey;
+        fm[ITEM_PROPERTY] = newKey;
         fm.zotero = itemBacklink(newKey);
       });
       if (file.basename.includes(oldKey)) {
@@ -418,7 +583,7 @@ export class LiteratureNotes {
 
     const file = await this.app.vault.create(path, withCache(body, await this.cacheJson(itemKey)));
     const fields = await this.writeFrontmatter(file, bundle, single);
-    await this.track(itemKey, file, bundle, notes, fields);
+    await this.track(itemKey, file, bundle, notes, fields, { created: true });
     return file;
   }
 
@@ -514,7 +679,7 @@ export class LiteratureNotes {
     });
 
     const fields = await this.writeFrontmatter(file, bundle, single);
-    await this.track(itemKey, file, bundle, notes, fields, new Set([...kept, ...untouched]));
+    await this.track(itemKey, file, bundle, notes, fields, { keptLocal: new Set([...kept, ...untouched]) });
     if (kept.length > 0) {
       new Notice(
         `${file.basename}: ${kept.length} note section(s) changed both in Obsidian and in Zotero were ` +
@@ -529,7 +694,7 @@ export class LiteratureNotes {
     const bases = this.state.items[bundle.item.key]?.fields ?? {};
     const fields: Record<string, string[]> = {};
     await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-      fm["zotero-key"] = bundle.item.key;
+      fm[ITEM_PROPERTY] = bundle.item.key;
       fm.title = (d.title as string) || null;
       fm.citekey = (d.citationKey as string) || null;
       fm.zotero = itemBacklink(bundle.item.key);
@@ -562,9 +727,10 @@ export class LiteratureNotes {
     bundle: ItemBundle,
     notes: RenderedNote[],
     fields: Record<string, string[]>,
-    keptLocal: Set<string> = new Set()
+    { keptLocal = new Set<string>(), created = false }: { keptLocal?: Set<string>; created?: boolean } = {}
   ): Promise<void> {
-    const prev = this.state.items[itemKey]?.regions || {};
+    const previous = this.state.items[itemKey];
+    const prev = previous?.regions || {};
     const regions: Record<string, RegionState> = {};
     const text = await this.app.vault.read(file);
     const inFile = new Set(noteLayout(text).regions.map((r) => r.key));
@@ -576,7 +742,9 @@ export class LiteratureNotes {
       }
     }
     const descendants = [...bundle.attachments.map((a) => a.key), ...bundle.notes.map((n) => n.key)];
-    this.state.items[itemKey] = { path: file.path, descendants, regions, fileHash: hash(text), fields };
+    // A note first tracked here, not created by this plugin, was written by someone else
+    const adopted = created ? undefined : previous?.path === file.path ? previous.adopted : "ask";
+    this.state.items[itemKey] = { path: file.path, descendants, regions, fileHash: hash(text), fields, adopted };
     this.lastRefresh.set(itemKey, Date.now());
     await this.saveState();
   }
@@ -623,9 +791,11 @@ export class LiteratureNotes {
     const itemKey = this.keyOf(file);
     if (!itemKey) return 0;
     await this.loadState();
-    const { sent, conflicts, failures, fieldEdits } = await this.locked(itemKey, () =>
-      this.doPush(itemKey, file, everyRegion)
-    );
+    const result = await this.locked(itemKey, () => this.doPush(itemKey, file, everyRegion));
+    const { conflicts, failures, fieldEdits } = result;
+    let { sent } = result;
+    // The text of a note not written by this plugin goes to Zotero only when the user says so
+    if (interactive && result.pendingBody) sent += await this.confirmAdoptedBody(itemKey, file, result.pendingBody);
     // Asked each time the push is, else once per value (after 30 s without typing, on leaving the note…)
     for (const edit of fieldEdits) {
       const id = `${edit.field.property}:${itemKey}:${edit.local.join("\n")}`;
@@ -661,12 +831,48 @@ export class LiteratureNotes {
     return sent;
   }
 
+  /**
+   * Asks whether the text of an adopted note (see `TrackedNote.adopted`)
+   * becomes a Zotero note; the number of Zotero notes created.
+   */
+  private async confirmAdoptedBody(itemKey: string, file: TFile, body: string): Promise<number> {
+    const excerpt = body.length > 300 ? `${body.slice(0, 300)}\u2026` : body;
+    const choice = await choose(
+      this.app,
+      "Create a Zotero note from this note?",
+      `"${file.basename}" was not created by this plugin (migrated from ZotLit, for instance), and its paper has ` +
+        `no Zotero note. Its text can become a Zotero note of the paper, kept in sync from now on.\n\n${excerpt}`,
+      ["Create a Zotero note", "Keep it in Obsidian only", "Decide later"]
+    );
+    if (choice === 1) {
+      await this.locked(itemKey, async () => {
+        const tracked = this.state.items[itemKey];
+        if (tracked) tracked.adopted = "local";
+        await this.saveState();
+      });
+      return 0;
+    }
+    if (choice !== 0) return 0;
+    const { sent, failures } = await this.locked(itemKey, () => this.doPush(itemKey, file, false, true));
+    for (const failure of failures) await this.reportFailure(file, failure);
+    return sent;
+  }
+
+  /** `sendAdopted`: the body of an adopted note is sent (the user said so) */
   private async doPush(
     itemKey: string,
     file: TFile,
-    all: boolean
-  ): Promise<{ sent: number; conflicts: Conflict[]; failures: ConversionError[]; fieldEdits: FieldEdit[] }> {
-    const none = { sent: 0, conflicts: [], failures: [], fieldEdits: [] };
+    all: boolean,
+    sendAdopted = false
+  ): Promise<{
+    sent: number;
+    conflicts: Conflict[];
+    failures: ConversionError[];
+    fieldEdits: FieldEdit[];
+    /** Text of an adopted note that would become a Zotero note, waiting for the user */
+    pendingBody: string;
+  }> {
+    const none = { sent: 0, conflicts: [], failures: [], fieldEdits: [], pendingBody: "" };
     const tracked = this.state.items[itemKey];
     if (!tracked || tracked.path !== file.path) return none;
     const text = await this.app.vault.read(file);
@@ -674,9 +880,13 @@ export class LiteratureNotes {
     const edited = layout.regions.filter(
       (r) => !r.key || (tracked.regions[r.key] && (all || hash(r.body) !== tracked.regions[r.key].hash))
     );
-    // The body of a paper that never had Zotero notes becomes one
+    // The body of a paper that never had Zotero notes becomes one, unless
+    // ZotLit manages part of it, or it was not written here and the user did not say so
     const body = text.slice(layout.contentStart, layout.contentEnd).trim();
-    const newBody = layout.regions.length === 0 && Object.keys(tracked.regions).length === 0 ? body : "";
+    const noteless = layout.regions.length === 0 && Object.keys(tracked.regions).length === 0;
+    const candidate = noteless && !hasZotlitSection(body) ? body : "";
+    const pendingBody = candidate && tracked.adopted === "ask" && !sendAdopted ? candidate : "";
+    const newBody = candidate && (!tracked.adopted || (tracked.adopted === "ask" && sendAdopted)) ? candidate : "";
     // Properties edited since the last sync (see `item-fields.ts`)
     const fm = frontmatterOf(text);
     const bases = tracked.fields ?? {};
@@ -685,7 +895,7 @@ export class LiteratureNotes {
       const base = bases[field.property];
       return local !== null && base !== undefined && !sameValue(field, local, base) ? [{ field, local, base }] : [];
     });
-    if (edited.length === 0 && !newBody && editedFields.length === 0) return none;
+    if (edited.length === 0 && !newBody && editedFields.length === 0) return { ...none, pendingBody };
 
     const bundle = await this.fetchBundle(itemKey);
     if (!bundle) return none;
@@ -753,6 +963,8 @@ export class LiteratureNotes {
       try {
         const { key, state } = await this.createNote(serverId, bundle, file, newBody);
         tracked.regions[key] = state;
+        // Its text is now a Zotero note, synced as any other
+        delete tracked.adopted;
         single = key;
       } catch (e) {
         if (!(e instanceof ConversionError)) throw e;
@@ -779,7 +991,7 @@ export class LiteratureNotes {
     const newKeys = [...created.map((c) => c.key), ...(single ? [single] : [])];
     tracked.descendants.push(...newKeys);
     await this.saveState();
-    return { sent: sent + newKeys.length, conflicts, failures, fieldEdits };
+    return { sent: sent + newKeys.length, conflicts, failures, fieldEdits, pendingBody };
   }
 
   /** Updates fields of an item; a version bumped meanwhile (Zotero does it on its own) is retried once */
@@ -902,7 +1114,7 @@ export class LiteratureNotes {
     const papers = new Map<string, string>();
     for (const path of wikilinkPaths(body)) {
       const note = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
-      const key = note && this.keyOf(note);
+      const key = note && this.paperOf(note);
       if (key) papers.set(path, `library/items/${key}`);
     }
     const html = markdownToHtml(body, { uri, images, papers, paper: uri(`library/items/${bundle.item.key}`) });
