@@ -6,7 +6,7 @@ export interface Mention {
   path: string;
   /** 0-based line number of the occurrence */
   line: number;
-  /** Trimmed text of the line, for context */
+  /** Trimmed text of the line, for context (read when asked, see {@link MentionIndex.getMentions}) */
   text: string;
 }
 
@@ -16,13 +16,10 @@ export interface Mention {
  * key, but indexing them costs nothing — a lookup simply never hits them.
  */
 const ZOTERO_URI_SOURCE =
-  "zotero:\\/\\/(?:select|open-pdf)\\/(?:library|groups\\/\\d+)\\/items\\/([A-Z0-9]+)";
-
-/** Longest line snippet kept for context */
-const MAX_SNIPPET = 300;
+  "zotero:\\/\\/(select|open-pdf)\\/(?:library|groups\\/\\d+)\\/items\\/([A-Z0-9]+)";
 
 /** Bumped when the cache format changes, to invalidate files written by older versions */
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 /** How long to wait after a note is modified before re-scanning it */
 const RESCAN_DEBOUNCE_MS = 500;
@@ -34,7 +31,8 @@ const SAVE_DEBOUNCE_MS = 2000;
 export interface Hit {
   key: string;
   line: number;
-  text: string;
+  /** A `zotero://select` link (else only `open-pdf` links, which name attachments) */
+  select?: true;
 }
 
 interface FileEntry {
@@ -59,7 +57,7 @@ interface CacheFile {
  */
 export class MentionIndex {
   private entries = new Map<string, FileEntry>();
-  private byKey = new Map<string, Mention[]>();
+  private byKey = new Map<string, (Hit & { path: string })[]>();
   private buildPromise: Promise<void> | null = null;
   private listeners = new Set<() => void>();
   private rescanTimers = new Map<string, number>();
@@ -79,16 +77,32 @@ export class MentionIndex {
     };
   }
 
-  /** All places in the vault linking to `itemKey`, sorted by path then line. */
+  /**
+   * All places in the vault linking to `itemKey`, sorted by path then line,
+   * with the text of their line (the notes are read: the index keeps no text).
+   */
   async getMentions(itemKey: string): Promise<Mention[]> {
     await this.ensureBuilt();
-    return this.byKey.get(itemKey.toUpperCase()) || [];
+    const mentions: Mention[] = [];
+    let path = "";
+    let lines: string[] = [];
+    for (const hit of this.byKey.get(itemKey.toUpperCase()) || []) {
+      if (hit.path !== path) {
+        path = hit.path;
+        const file = this.app.vault.getFileByPath(path);
+        lines = file ? (await this.app.vault.cachedRead(file)).split("\n") : [];
+      }
+      mentions.push({ path, line: hit.line, text: (lines[hit.line] ?? "").trim() });
+    }
+    return mentions;
   }
 
-  /** Every item key linked from the vault */
-  async getKeys(): Promise<string[]> {
+  /** Every item key linked from the vault (`select`: by a `zotero://select` link) */
+  async getKeys(select = false): Promise<string[]> {
     await this.ensureBuilt();
-    return Array.from(this.byKey.keys());
+    return Array.from(this.byKey.entries())
+      .filter(([, hits]) => !select || hits.some((h) => h.select))
+      .map(([key]) => key);
   }
 
   /**
@@ -202,7 +216,7 @@ export class MentionIndex {
           list = [];
           this.byKey.set(hit.key, list);
         }
-        list.push({ path, line: hit.line, text: hit.text });
+        list.push({ ...hit, path });
       }
     }
     for (const list of this.byKey.values()) {
@@ -261,14 +275,13 @@ function collectHits(content: string): Hit[] {
   const re = new RegExp(ZOTERO_URI_SOURCE, "gi");
   const lines = content.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    re.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    const keys = new Set<string>();
-    while ((match = re.exec(line)) !== null) keys.add(match[1].toUpperCase());
-    if (keys.size === 0) continue;
-    const text = line.trim().slice(0, MAX_SNIPPET);
-    for (const key of keys) hits.push({ key, line: i, text });
+    // Key → whether one of its links on the line is a select link
+    const keys = new Map<string, boolean>();
+    for (const match of lines[i].matchAll(re)) {
+      const key = match[2].toUpperCase();
+      keys.set(key, keys.get(key) || match[1].toLowerCase() === "select");
+    }
+    for (const [key, select] of keys) hits.push(select ? { key, line: i, select } : { key, line: i });
   }
   return hits;
 }

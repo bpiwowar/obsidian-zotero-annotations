@@ -872,7 +872,8 @@ export class AnnotationView extends ItemView {
       });
       openLink.addEventListener("click", () => {
         // Zotero's `page` counts from 1 (it is not the page label)
-        const page = annot.pageIndex !== null ? `page=${annot.pageIndex + 1}&` : "";
+        const pageIndex = annot.position?.pageIndex;
+        const page = typeof pageIndex === "number" ? `page=${pageIndex + 1}&` : "";
         this.openExternal(
           `zotero://open-pdf/library/items/${annot.attachmentKey}?${page}annotation=${annot.key}`
         );

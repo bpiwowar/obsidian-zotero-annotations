@@ -43,17 +43,11 @@ export interface ZoteroAnnotation {
   comment: string;
   color: string;
   pageLabel: string;
-  /** Page in the PDF, from 0 (null for EPUBs and snapshots) */
-  pageIndex: number | null;
-  /** `annotationPosition` (page, rectangles…) */
+  /** Where it is (`annotationPosition` without ink paths): page from 0 and rectangles, or EPUB/snapshot selector */
   position: NoteAnnotation["position"] | null;
   tags: string[];
   /** The attachment key that contains this annotation */
   attachmentKey: string;
-  /** Sort key: page number (parsed as int, fallback to 0) */
-  sortPage: number;
-  /** Position within the page (sortIndex field from Zotero) */
-  sortIndex: string;
 }
 
 export interface ZoteroItemInfo {
@@ -63,7 +57,6 @@ export interface ZoteroItemInfo {
   /** Author and year as Zotero cites the item: "Doe et al., 2020" */
   citation: string;
   date: string;
-  itemType: string;
   abstractNote: string;
   notes: ZoteroNote[];
   /** Items linked through Zotero's "Related" field */
@@ -201,7 +194,6 @@ export async function fetchItemInfo(itemKey: string): Promise<ZoteroItemInfo | n
       creators,
       citation: [shortCreators(d), /\b(\d{4})\b/.exec((d.date as string) || "")?.[1]].filter(Boolean).join(", "),
       date: (d.date as string) || "",
-      itemType: (d.itemType as string) || "",
       abstractNote: (d.abstractNote as string) || "",
       notes,
       related,
@@ -233,7 +225,8 @@ export async function fetchAnnotations(itemKey: string): Promise<ZoteroAnnotatio
   }
 
   // Step 2: for each PDF attachment, fetch annotation children
-  const allAnnotations: ZoteroAnnotation[] = [];
+  // Sorted by page, then by position within the page
+  const allAnnotations: { annotation: ZoteroAnnotation; page: number; index: string }[] = [];
 
   for (const pdf of pdfAttachments) {
     try {
@@ -247,27 +240,33 @@ export async function fetchAnnotations(itemKey: string): Promise<ZoteroAnnotatio
         const pageNum = parseInt(pageLabel, 10);
         let position: ZoteroAnnotation["position"] = null;
         try {
-          position = JSON.parse((a.data.annotationPosition as string) || "null") as ZoteroAnnotation["position"];
+          // Only what links need (the offline copy keeps it): not ink paths
+          const raw = JSON.parse((a.data.annotationPosition as string) || "null") as ZoteroAnnotation["position"];
+          if (raw) {
+            const { pageIndex, rects, nextPageRects, type, conformsTo, value } = raw;
+            position = { pageIndex, rects, nextPageRects, type, conformsTo, value };
+          }
         } catch {
           // no position
         }
-        const pageIndex = typeof position?.pageIndex === "number" ? position.pageIndex : null;
 
-        allAnnotations.push({
+        const annotation: ZoteroAnnotation = {
           key: a.key,
           type: (a.data.annotationType as ZoteroAnnotation["type"]) || "highlight",
           text: (a.data.annotationText as string) || "",
           comment: (a.data.annotationComment as string) || "",
           color: (a.data.annotationColor as string) || "#ffd400",
           pageLabel,
-          pageIndex,
           position,
           tags: Array.isArray(a.data.tags)
             ? (a.data.tags as Array<{ tag: string }>).map((t) => t.tag)
             : [],
           attachmentKey: pdf.key,
-          sortPage: isNaN(pageNum) ? 0 : pageNum,
-          sortIndex: (a.data.annotationSortIndex as string) || "0",
+        };
+        allAnnotations.push({
+          annotation,
+          page: isNaN(pageNum) ? 0 : pageNum,
+          index: (a.data.annotationSortIndex as string) || "0",
         });
       }
     } catch (e) {
@@ -275,13 +274,8 @@ export async function fetchAnnotations(itemKey: string): Promise<ZoteroAnnotatio
     }
   }
 
-  // Sort by page, then by sortIndex within page
-  allAnnotations.sort((a, b) => {
-    if (a.sortPage !== b.sortPage) return a.sortPage - b.sortPage;
-    return a.sortIndex.localeCompare(b.sortIndex);
-  });
-
-  return allAnnotations;
+  allAnnotations.sort((a, b) => (a.page !== b.page ? a.page - b.page : a.index.localeCompare(b.index)));
+  return allAnnotations.map((a) => a.annotation);
 }
 
 /**

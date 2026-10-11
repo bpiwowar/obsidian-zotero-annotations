@@ -91,8 +91,6 @@ const MAX_CHANGED_LOOKUP = 1000;
 
 
 interface RegionState {
-  /** Zotero version of the note when last synced */
-  version: number;
   /** Hash of the region text when last synced */
   hash: string;
   /** Hash of the note's HTML in Zotero when last synced (absent in older state) */
@@ -101,11 +99,9 @@ interface RegionState {
 
 interface TrackedNote {
   path: string;
-  /** Keys of the item's attachments, notes, annotations and note images */
+  /** Keys of the item's attachments and notes (annotations are traced through their attachment, see `affectedItems`) */
   descendants: string[];
   regions: Record<string, RegionState>;
-  /** Hash of the whole file after the last write */
-  fileHash: string;
   /** Item fields mirrored as properties (authors, keywords): value when last synced */
   fields?: Record<string, string[]>;
   /**
@@ -172,8 +168,8 @@ interface RenderedNote {
 }
 
 /** Whether a Zotero note is still what was last synced */
-function zoteroUnchanged(prev: RegionState, note: { version: number; html: string }): boolean {
-  return prev.html !== undefined ? prev.html === hash(note.html) : prev.version === note.version;
+function zoteroUnchanged(prev: RegionState, html: string): boolean {
+  return prev.html === hash(html);
 }
 
 /** Zotero note HTML: the body in the wrapper of the note it replaces (schema version, cited items) */
@@ -615,7 +611,7 @@ export class LiteratureNotes {
         if (!region) {
           // A region removed from the file on purpose is not brought back
           if (!prev || overwrite) added.push(note);
-        } else if (!overwrite && prev && (prev.html !== undefined || hash(region.body) !== prev.hash) && zoteroUnchanged(prev, note)) {
+        } else if (!overwrite && prev && (prev.html !== undefined || hash(region.body) !== prev.hash) && zoteroUnchanged(prev, note.html)) {
           // Zotero has nothing new: the text stands (edits go to Zotero by `push`)
           untouched.add(note.key);
         } else if (overwrite || !prev || hash(region.body) === prev.hash) {
@@ -671,12 +667,15 @@ export class LiteratureNotes {
       for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
       return out.replace(/\n{4,}/g, "\n\n\n");
     };
-    await this.app.vault.process(file, (full) => {
+    let previousCache: string | null = null;
+    const written = await this.app.vault.process(file, (full) => {
       // The cache block is rewritten apart (only when its data changed)
       const { text, json } = splitCache(full);
+      previousCache = json;
       const block = cache === null || (json !== null && sameCache(json, cache)) ? json : cache;
       return withCache(rewrite(text), block);
     });
+    if (cache !== null && previousCache !== null) await this.dropImages(previousCache, cache, written);
 
     const fields = await this.writeFrontmatter(file, bundle, single);
     await this.track(itemKey, file, bundle, notes, fields, { keptLocal: new Set([...kept, ...untouched]) });
@@ -738,13 +737,13 @@ export class LiteratureNotes {
       if (keptLocal.has(note.key)) {
         if (prev[note.key]) regions[note.key] = prev[note.key];
       } else if (inFile.has(note.key) || prev[note.key]) {
-        regions[note.key] = { version: note.version, hash: hash(note.markdown), html: hash(note.html) };
+        regions[note.key] = { hash: hash(note.markdown), html: hash(note.html) };
       }
     }
     const descendants = [...bundle.attachments.map((a) => a.key), ...bundle.notes.map((n) => n.key)];
     // A note first tracked here, not created by this plugin, was written by someone else
     const adopted = created ? undefined : previous?.path === file.path ? previous.adopted : "ask";
-    this.state.items[itemKey] = { path: file.path, descendants, regions, fileHash: hash(text), fields, adopted };
+    this.state.items[itemKey] = { path: file.path, descendants, regions, fields, adopted };
     this.lastRefresh.set(itemKey, Date.now());
     await this.saveState();
   }
@@ -948,7 +947,7 @@ export class LiteratureNotes {
         // Deleted in Zotero: the text stays in Obsidian only
         if (!note) continue;
         const prev = tracked.regions[region.key];
-        if (!zoteroUnchanged(prev, { version: note.version, html: noteHtml(note) })) throw new PushConflict(note);
+        if (!zoteroUnchanged(prev, noteHtml(note))) throw new PushConflict(note);
         tracked.regions[region.key] = await this.updateNote(serverId, bundle, file, region.key, region.body, note, prev);
         sent++;
       } catch (e) {
@@ -1056,11 +1055,11 @@ export class LiteratureNotes {
         if (!(e instanceof ZoteroConflictError) || attempt > 0) throw e;
         // Zotero bumps versions on its own: only a change of content is a conflict
         current = await fetchItem(key);
-        if (!zoteroUnchanged(prev, { version: current.version, html: noteHtml(current) })) throw new PushConflict(current);
+        if (!zoteroUnchanged(prev, noteHtml(current))) throw new PushConflict(current);
       }
     }
     const fresh = await fetchItem(key);
-    return { version: fresh.version, hash: hash(body), html: hash(noteHtml(fresh)) };
+    return { hash: hash(body), html: hash(noteHtml(fresh)) };
   }
 
   /** Creates a Zotero note of the paper from a region of the file */
@@ -1073,7 +1072,7 @@ export class LiteratureNotes {
     const html = wrapNoteHtml(await this.regionHtml(body, file.path, bundle, null), null);
     const [key] = await this.writer.createItems(serverId, [{ itemType: "note", parentItem: bundle.item.key, note: html }]);
     const fresh = await fetchItem(key);
-    return { key, state: { version: fresh.version, hash: hash(body), html: hash(noteHtml(fresh)) } };
+    return { key, state: { hash: hash(body), html: hash(noteHtml(fresh)) } };
   }
 
   /** Zotero note HTML of a region (inside the wrapper); `previous` is the HTML it replaces */
@@ -1158,7 +1157,7 @@ export class LiteratureNotes {
         const bundle = await this.fetchBundle(itemKey);
         if (!bundle) return;
         const { serverId } = await fetchLibraryState();
-        const seen: RegionState = { version: note.version, hash: "", html: hash(noteHtml(note)) };
+        const seen: RegionState = { hash: "", html: hash(noteHtml(note)) };
         tracked.regions[conflict.key] = await this.updateNote(serverId, bundle, file, conflict.key, region.body, note, seen);
       } else {
         const markdown = await this.noteToMarkdown(noteHtml(note), file.path);
@@ -1169,7 +1168,7 @@ export class LiteratureNotes {
           const replacement = layout.bare ? `${markdown.trim()}\n` : noteRegion(r.key, markdown);
           return text.slice(0, r.start) + replacement + text.slice(r.end);
         });
-        tracked.regions[conflict.key] = { version: note.version, hash: hash(markdown), html: hash(noteHtml(note)) };
+        tracked.regions[conflict.key] = { hash: hash(markdown), html: hash(noteHtml(note)) };
       }
       this.reported.delete(`${conflict.key}@${conflict.note.version}`);
       await this.saveState();
@@ -1230,9 +1229,6 @@ export class LiteratureNotes {
       // Another Zotero database (or first run): versions mean nothing, re-check everything
       affected = new Set(tracked);
       this.state.serverId = lib.serverId;
-      for (const t of Object.values(this.state.items)) {
-        for (const r of Object.values(t.regions)) r.version = 0;
-      }
     } else if (lib.version === this.state.libraryVersion) {
       return result;
     } else {
@@ -1334,6 +1330,24 @@ export class LiteratureNotes {
     } catch (e) {
       console.warn(`Zotero Annotations: could not cache the annotations of ${itemKey}`, e);
       return null;
+    }
+  }
+
+  /**
+   * Deletes the copies of the image annotations of an old cache block that are
+   * gone from the new one (deleted in Zotero), unless a note embeds them
+   * (a drop, a Zotero note: `text` is the literature note, just written)
+   */
+  private async dropImages(before: string, after: string, text: string): Promise<void> {
+    const images = (json: string): string[] =>
+      (parseCache(json)?.annotations ?? []).filter((a) => a.type === "image").map((a) => a.key);
+    const kept = new Set(images(after));
+    for (const key of images(before)) {
+      if (kept.has(key) || text.includes(`${key}.png`)) continue;
+      const path = this.annotationImagePath(key);
+      const image = this.app.vault.getAbstractFileByPath(path);
+      const linked = Object.values(this.app.metadataCache.resolvedLinks).some((links) => path in links);
+      if (image instanceof TFile && !linked) await this.app.fileManager.trashFile(image);
     }
   }
 
@@ -1533,7 +1547,13 @@ export class LiteratureNotes {
       const adapter = this.app.vault.adapter;
       if (!(await adapter.exists(this.statePath))) return;
       const raw = JSON.parse(await adapter.read(this.statePath)) as SyncState | null;
-      if (raw && raw.version === STATE_VERSION && raw.items) this.state = raw;
+      if (!raw || raw.version !== STATE_VERSION || !raw.items) return;
+      // Fields of older versions, no longer used
+      for (const t of Object.values(raw.items) as (TrackedNote & { fileHash?: string })[]) {
+        delete t.fileHash;
+        for (const r of Object.values(t.regions) as (RegionState & { version?: number })[]) delete r.version;
+      }
+      this.state = raw;
     } catch (e) {
       console.error("Zotero Annotations: failed to load literature note state", e);
     }

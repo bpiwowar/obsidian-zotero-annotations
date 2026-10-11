@@ -70,7 +70,7 @@ Caching, since scanning a whole vault is the expensive part:
 
 - The scan is **lazy** — it runs on the first lookup, not on plugin load — and its result stays in memory for the session.
 - Vault `create`/`modify`/`delete`/`rename` events re-scan only the affected note (500 ms debounce), then notify the sidebar so an open section refreshes itself. Events before the first build are ignored (the lazy build reads current state anyway), which also makes Obsidian's startup burst of `create` events free.
-- The index is mirrored to `<plugin dir>/mention-index.json` (per-file mtime + hits, `CACHE_VERSION`-stamped, debounced write). On restart, only notes whose mtime changed are re-read; notes without any Zotero link are still recorded, since their mtime is what lets them be skipped.
+- The index is mirrored to `<plugin dir>/mention-index.json` (per-file mtime + hits: key, line, whether a `select` link; `CACHE_VERSION`-stamped, debounced write). It keeps no text: `getMentions` reads the lines of the notes when asked. On restart, only notes whose mtime changed are re-read; notes without any Zotero link are still recorded, since their mtime is what lets them be skipped.
 - "Rescan vault for Zotero mentions" command forces a full rebuild.
 
 ### Papers in the current note

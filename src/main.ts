@@ -978,12 +978,7 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
   /** Repairs the links of every note of the vault (see {@link repairLinksInNote}) */
   private async repairLinksInVault(): Promise<void> {
     // Only paper links are repaired (open-pdf links name attachments)
-    const keys: string[] = [];
-    for (const key of await this.mentions.getKeys()) {
-      const select = new RegExp(`zotero://select/(?:library|groups/\\d+)/items/${key}(?![A-Z0-9])`, "i");
-      if ((await this.mentions.getMentions(key)).some((m) => select.test(m.text))) keys.push(key);
-    }
-    await this.repairLinks(keys, "Vault");
+    await this.repairLinks(await this.mentions.getKeys(true), "Vault");
   }
 
   /** Relinks the dead items among `keys` (Zotero links of `where`) */
