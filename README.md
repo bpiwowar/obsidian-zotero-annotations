@@ -60,6 +60,8 @@ The plugin's settings link to the same page, under **Getting Zotero links**.
 
 ## Searching Zotero
 
+![Search Zotero: the query "splade author:formal year:2021" and its results, each with the labels its link can have and buttons to show it in the sidebar or in Zotero](screenshots/search.png)
+
 **Search Zotero and insert a link** (<kbd>Cmd/Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd>, which you can change under **Settings → Hotkeys**) opens a search of your library. It starts from the selected text, if any. Words match titles, authors and years, as in Zotero's quick search. Fields narrow the search:
 
 | Field | Example | Matches |
@@ -141,6 +143,8 @@ A ZotLit note is only read: when it is open, the sidebar shows its paper, with t
 ### Merged or deleted items
 
 When Zotero merges duplicates, it keeps one item and moves the others to the trash, so links to them stop working. For such a link, the sidebar shows **Find the current item** (also for an item in the trash); the "Repair links to deleted or merged Zotero items" commands check every paper link of the current note, or of the whole vault — malformed keys included (a key that is not 8 characters). Items merged in Zotero (Zotero records which item was kept) are relinked right away: every link to the old item in the vault points at the item kept, and its literature note moves to it (`zotero-item`, name) and is refreshed from it — unless the item kept has a literature note already, in which case the report says so.
+
+![The link repair report of a note: an item in the Zotero trash, the line linking to it, the queries to search with, and the items found, the best match first](screenshots/repair.png)
 
 A report lists what was done, followed by the items Zotero has no record for. For each one it shows what is known of it (from Zotero's trash, else from its literature note: title, authors, year; else from the text of its links), its literature note, the notes linking to it, and a search of your library. Select the queries to combine — title, first author and year, the titles and citations of its links, e.g. "Suslik 2026" — or type one; the item most like it is marked "best match". You can also search the web for it (Google Scholar, Semantic Scholar, Google). Pick the item with **Use this item**; nothing changes before. Items are searched when the report opens, unless you turn **Search automatically** off — then **Search all** searches them all at once. Clicking a note in the report opens it, with a notice to go back to the report (or use "Show the last report of Zotero link repairs"); it comes back as you left it, searches included. Its text can be selected and copied.
 
