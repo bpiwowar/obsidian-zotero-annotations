@@ -609,3 +609,34 @@
   user-select: none;
   -webkit-user-select: none;
 }
+
+/* Library search */
+.zotero-annot-search .zotero-annot-search-input .setting-item-control,
+.zotero-annot-search .zotero-annot-search-input .search-input-container {
+  flex: 1;
+  width: 100%;
+}
+
+.zotero-annot-search .zotero-annot-search-input .setting-item-info {
+  display: none;
+}
+
+.zotero-annot-search-results {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.zotero-annot-search-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.zotero-annot-search-labels .zotero-annot-search-label {
+  height: auto;
+  padding: 2px 6px;
+  font-size: var(--font-ui-smaller);
+  text-align: left;
+  white-space: normal;
+}

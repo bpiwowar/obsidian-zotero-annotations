@@ -20,6 +20,8 @@ src/
   node.ts              # Lazy, desktop-only loaders of Node modules (fs, os, crypto)
   item-recovery.ts     # Dead item keys (trashed/deleted) → the item that replaced them (merge record, else title)
   repair-modal.ts      # Report of a link repair; search to relink the items Zotero has no merge record for
+  zotero-search.ts     # Library search with fields (author:, tag:…) → API params + checks; link label templates
+  search-modal.ts      # Modal: search Zotero, one-click insert of a link to an item (label from a template)
   note-format.ts       # Literature note text: file names (short title – KEY), header, zt-note regions / single-note layout
   styles.ts            # Inline CSS (injected at runtime, uses Obsidian CSS variables)
 manifest.json          # Obsidian plugin manifest
@@ -151,6 +153,17 @@ items picked, queries, results, scroll — and reopens as it was from the notice
 by command. Lookups (`memo`) and the report's searches (`searchForRepair`) are reused for 5 minutes. Triggered from the
 sidebar (404 error, or the "In the Zotero trash" line of a trashed item) and by the "Repair links…" commands (select
 links of the note, or the keys of the mention index that have select links).
+
+### Library search
+
+"Search Zotero and insert a link" (default hotkey Mod+Alt+Z, desktop only) opens `ZoteroSearchModal`. `parseLibraryQuery`
+splits the input into what the API filters (`tag=`, repeated for AND, `-tag` excludes; `itemType=`) and the quick search `q`
+(free words, plus the values of `author:`/`title:`/`year:`), whose matches are then checked client-side (`checks`: creator
+name / title contains, year range; accents and case folded). The fields are parsed by the plugin, so the syntax does not
+depend on the Zotero version. Results are searched 300 ms after typing stops (`searchLibrary`, top-level items, no notes or
+attachments), each a row offering every label of the `linkLabels` setting (one template per line; `templateValues`:
+`{title} {authors} {year} {citation} {key} {citekey} {type}`, brackets escaped); a click inserts
+`[label](zotero://select/library/items/KEY)` (Enter in the box: first result, first label). Other buttons show the item in the sidebar or select it in Zotero.
 
 ### Drag and drop
 

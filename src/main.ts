@@ -22,6 +22,8 @@ import { CACHE_LANGUAGE, parseCache, readOnlyCache } from "./annotation-cache";
 import { os } from "./node";
 import { DeadItem, deadItem, deadItems, findReplacement, linkTexts, searchQueries, withMetadata } from "./item-recovery";
 import { RelinkResult, RelinkedItem, RepairEntry, RepairModal, RepairReport } from "./repair-modal";
+import { ZoteroSearchModal } from "./search-modal";
+import { parseTemplates } from "./zotero-search";
 
 /** When literature notes get created */
 type CreateMode = "manual" | "cursor" | "linked";
@@ -45,6 +47,8 @@ interface ZoteroAnnotationsSettings {
   titleMaxWords: number;
   /** Note names keep the title up to the first of these characters */
   titleCutAt: string;
+  /** Labels a search result can be linked with: one template per line */
+  linkLabels: string;
 }
 
 const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
@@ -59,6 +63,7 @@ const DEFAULT_SETTINGS: ZoteroAnnotationsSettings = {
   followNote: true,
   titleMaxWords: 6,
   titleCutAt: ":",
+  linkLabels: ["{title} ({citation})", "({citation})", "{title}"].join("\n"),
 };
 
 
@@ -218,6 +223,15 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
         if (view) view.toggleFreeze();
       },
     });
+
+    if (Platform.isDesktop) {
+      this.addCommand({
+        id: "search-zotero",
+        name: "Search Zotero and insert a link",
+        hotkeys: [{ modifiers: ["Mod", "Alt"], key: "Z" }],
+        callback: () => this.searchZotero(),
+      });
+    }
 
     this.addCommand({
       id: "list-papers-in-note",
@@ -538,6 +552,30 @@ export default class ZoteroAnnotationsPlugin extends Plugin {
     this.cache.delete(itemKey);
     this.summaries.delete(itemKey);
     await this.loadAnnotations(itemKey, true);
+  }
+
+  /** Library search; the item picked is inserted in the editor (the selection is the first query) */
+  private searchZotero(): void {
+    const editor = this.app.workspace.activeEditor?.editor;
+    const selection = editor?.getSelection() ?? "";
+    new ZoteroSearchModal(
+      this.app,
+      {
+        labels: parseTemplates(this.settings.linkLabels),
+        insert: (text) => {
+          if (!editor) return false;
+          editor.replaceSelection(text);
+          return true;
+        },
+        show: (key) =>
+          void (async () => {
+            await this.ensureSidebarOpen(true);
+            await this.loadAnnotations(key);
+          })(),
+        openInZotero: (key) => this.openInZotero(`zotero://select/library/items/${key}`),
+      },
+      selection.includes("\n") ? "" : selection.trim()
+    ).open();
   }
 
   private async openLiteratureNote(itemKey: string): Promise<void> {
@@ -1217,6 +1255,20 @@ function linksHelp(): DocumentFragment {
   return frag;
 }
 
+function linkLabelsHelp(): DocumentFragment {
+  const frag = createFragment();
+  frag.appendText(
+    '"Search Zotero and insert a link" inserts a zotero://select link to the item picked, labelled with one of these ' +
+      "templates (one per line, each offered for every result; Enter uses the first). Values: "
+  );
+  ["{title}", "{authors}", "{year}", "{citation}", "{key}", "{citekey}", "{type}"].forEach((v, i) => {
+    if (i) frag.appendText(", ");
+    frag.createEl("code", { text: v });
+  });
+  frag.appendText(" — {citation} is \u201cDoe et al., 2020\u201d.");
+  return frag;
+}
+
 class ZoteroAnnotationsSettingTab extends PluginSettingTab {
   plugin: ZoteroAnnotationsPlugin;
 
@@ -1244,6 +1296,17 @@ class ZoteroAnnotationsSettingTab extends PluginSettingTab {
       {
         name: "Getting Zotero links",
         desc: linksHelp(),
+      },
+      {
+        name: "Search link labels",
+        desc: linkLabelsHelp(),
+        visible: () => Platform.isDesktop,
+        control: {
+          type: "textarea",
+          key: "linkLabels",
+          rows: 4,
+          defaultValue: DEFAULT_SETTINGS.linkLabels,
+        },
       },
       {
         name: "Follow literature notes",

@@ -33,6 +33,7 @@ An Obsidian plugin that automatically shows Zotero PDF annotations in a sidebar 
 - **PDF links**: Click a page number to open the PDF at that page in Zotero
 - **Caching**: Annotations are cached in memory to avoid repeated API calls
 - **Literature notes** (optional): one note per paper holding its Zotero notes, kept in sync with Zotero in both directions — see below
+- **Search Zotero** (<kbd>Cmd/Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd>): find an item of your library and insert a link to it — see below
 - **Drag and drop**: drag an annotation from the sidebar into a note to quote it with a link back to the PDF
 - **Dead links repaired**: a link to an item merged into another (or deleted) can be pointed at the item that replaced it — see below
 
@@ -56,6 +57,32 @@ Zotero has no built-in command to copy them, but the [Actions & Tags](https://gi
 3. Give it a **Shortcut**, select a paper in the library — or an annotation in the PDF reader's sidebar — run the action (shortcut or right-click menu), and paste into Obsidian.
 
 The plugin's settings link to the same page, under **Getting Zotero links**.
+
+## Searching Zotero
+
+**Search Zotero and insert a link** (<kbd>Cmd/Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd>, which you can change under **Settings → Hotkeys**) opens a search of your library. It starts from the selected text, if any. Words match titles, authors and years, as in Zotero's quick search. Fields narrow the search:
+
+| Field | Example | Matches |
+|---|---|---|
+| `author:` (`au:`, `creator:`) | `author:"van der Berg"` | a creator's name contains it |
+| `title:` (`ti:`) | `title:"all you need"` | the title contains it |
+| `year:` (`y:`) | `year:2017`, `year:2015-2019`, `year:2020-` | the year, or a range |
+| `tag:` | `tag:"to read"` | the item has this tag (exact name) |
+| `type:` | `type:book`, `type:journalArticle` | the item type |
+
+A `-` before a field excludes what it matches (`-tag:read`). Accents and case are ignored.
+
+Results appear as you type, each offering the labels its link can have: click one to insert a link to the item, `[label](zotero://select/library/items/KEY)`, at the cursor (replacing the selection). <kbd>Enter</kbd> in the search box inserts the first result with the first label. The buttons on the right show the item in the sidebar or select it in Zotero.
+
+Labels are set under **Search link labels**, one template per line, in the order shown. The defaults are:
+
+```
+{title} ({citation})
+({citation})
+{title}
+```
+
+A template can use `{title}`, `{authors}` ("Doe et al."), `{year}`, `{citation}` ("Doe et al., 2020"), `{key}`, `{citekey}` (Zotero's citation key, when the item has one) and `{type}`. `({citation})` gives the citation links that literature notes use, so they go back to Zotero as citations.
 
 ## Literature notes
 
@@ -148,6 +175,7 @@ You can also set the `OBSIDIAN_PLUGIN_DIR` environment variable instead of using
 | Command | Description |
 |---|---|
 | Toggle Zotero Annotations sidebar | Show/hide the sidebar |
+| Search Zotero and insert a link | Searches the library and inserts the item picked (<kbd>Cmd/Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Z</kbd>) |
 | Pin/Unpin annotations sidebar | Freeze the sidebar so cursor movements don't update it |
 | Refresh current annotations | Clear the cache and re-fetch annotations for the current item |
 | Open literature note of the paper in the sidebar | Opens the paper's literature note, creating it if needed |

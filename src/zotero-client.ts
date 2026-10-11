@@ -368,6 +368,35 @@ export async function searchItemSummaries(query: string, limit = 25): Promise<Zo
   return (await searchItems(query, limit)).filter((i) => !i.data.deleted).map(summarize);
 }
 
+/**
+ * Top-level items matching a quick search (`q`, title/creators/year), having
+ * every tag of `tags` (exact names) and of type `itemType` (`-type` excludes it);
+ * not in the trash, and papers only (no standalone notes or files).
+ */
+export async function searchLibrary(
+  { q, tags = [], itemType }: { q: string; tags?: string[]; itemType?: string },
+  limit = 50
+): Promise<ZoteroApiItem[]> {
+  const params = [`limit=${limit}`];
+  if (q) params.push(`q=${encodeURIComponent(q)}`);
+  for (const tag of tags) params.push(`tag=${encodeURIComponent(tag)}`);
+  if (itemType) params.push(`itemType=${encodeURIComponent(itemType)}`);
+  if (!q) params.push("sort=dateModified", "direction=desc");
+  const items = (await zoteroFetch(`${ZOTERO_BASE}/items/top?${params.join("&")}`)) as ZoteroApiItem[];
+  // Standalone notes and files are top-level items too
+  return items.filter((i) => !i.data.deleted && !NON_PAPER_TYPES.has(i.data.itemType as string));
+}
+
+/** Every creator's name ("First Last") */
+export function creatorNames(data: Record<string, unknown>): string[] {
+  return creatorList(data).map(creatorName).filter(Boolean);
+}
+
+/** Title, short creators and year of an API item */
+export function itemSummary(item: ZoteroApiItem): ZoteroItemSummary {
+  return summarize(item);
+}
+
 /** Items per page of {@link scanTopItems} */
 const SCAN_PAGE = 100;
 
