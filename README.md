@@ -125,11 +125,35 @@ A Zotero child note, as Markdown
 - **Authors**: the `authors` property lists the paper's authors ("First Last"), refreshed from Zotero. Edit the list in Obsidian (add, remove, reorder; "Last, First" for a new name with a last name of several words) and the plugin asks before sending it to Zotero: once you stop typing for 30 s, when you leave the note, or with "Send literature note edits to Zotero". Editors and other creators are not listed, and kept as they are.
 - **Keywords**: the `keywords` property lists the paper's Zotero tags, synced both ways without asking: tags added or removed in Obsidian are added or removed in Zotero, and the other way round (changes made on both sides are merged).
 - **Properties**: title, citation key and links are properties, refreshed from Zotero: `zotero` selects the paper in Zotero (in its own literature note, clicking it opens Zotero rather than the sidebar), `zotero-pdf` opens the PDF in Zotero's reader, `pdf` opens the file itself. The body holds only your text and the Zotero notes.
-- **Your edits are safe**: text outside the `zt-note` sections is never touched (a note holding a single Zotero note has no such text: the whole body is the note). A note or `zt-note` section you edited in Obsidian is not overwritten: it is sent to Zotero (when you leave the note, after 30 s without typing, or with "Send literature note edits to Zotero"; the first time, Zotero asks for permission — choose "Always allow"). If the note changed in Zotero too, you choose which version to keep. A new `%%zt-note%%` section (without key), or the text of a note for a paper without Zotero notes, becomes a new Zotero note. Images go along (PNG and JPEG; Zotero imports them when the note is opened in Zotero). Deleting a `zt-note` section (or emptying a single-note body) keeps it out of the note. Holding exactly one Zotero note and nothing else, a note drops its markers.
+- **Your edits are safe**: text outside the `zt-note` sections is never touched (a note holding a single Zotero note has no such text: the whole body is the note). A note or `zt-note` section you edited in Obsidian is not overwritten: it is sent to Zotero (when you leave the note, after 30 s without typing, or with "Send literature note edits to Zotero"; the first time, Zotero asks for permission — choose "Always allow"). If the note changed in Zotero too, you choose which version to keep. A new `%%zt-note%%` section (without key), or the text of a note for a paper without Zotero notes, becomes a new Zotero note. Images go along (PNG and JPEG; Zotero imports them when the note is opened in Zotero). Deleting a `zt-note` section keeps it out of the note. Holding exactly one Zotero note and nothing else, a note drops its markers. See [When Obsidian and Zotero differ](#when-obsidian-and-zotero-differ) for every case.
 - **Links between papers**: in a Zotero note section, a wikilink to another literature note — `[[RePo Language Models with Context Re-Positioning – U8NBCFLN|RePo: Language Models with Context Re-Positioning]]` — becomes a citation of its paper in Zotero, with the link's text (or the note name). The other way round, a Zotero citation of a paper that has a literature note (without a page number) becomes a wikilink to that note, with the citation's text: `[[… – U8NBCFLN|(Li et al., 2025)]]`. Other citations stay `zotero://select` links.
 - **Images** inside Zotero notes are copied to the image folder.
 - **Text not written by the plugin** (a migrated ZotLit note, for instance) goes to Zotero only when you say so: "Send literature note edits to Zotero" asks whether it becomes a Zotero note (or stays in Obsidian only).
 - **Offline copy**: a literature note ends with a `zotero-annotations` block holding what the sidebar shows (paper details and annotations, as JSON; image annotations are copied to the image folder). It is shown as a single line ("12 Zotero annotations, copy of …") and cannot be edited in Obsidian. When Zotero cannot be reached — on your phone, or with Zotero closed — the sidebar shows this copy, marked "Offline copy". It is updated with the note, when the annotations change in Zotero.
+
+### When Obsidian and Zotero differ
+
+A *section* is a `%%zt-note: KEY%%` section, or the whole body of a note holding a single Zotero note (its key in `zotero-note`). "Sent" means sent at the next push: 30 s after you stop typing, when you leave the note, before each sync, or with "Send literature note edits to Zotero". A question is asked once per session when it comes from an automatic push or sync, and each time with "Send…".
+
+| In Obsidian | In Zotero | What the plugin does |
+|---|---|---|
+| Section unchanged since the last sync | Note changed | Section refreshed from Zotero |
+| Section edited | Note unchanged | Sent: it replaces the Zotero note |
+| Section edited | Note changed | Nothing is overwritten. "Send…" asks which version to keep; otherwise a notice, once |
+| Section unchanged | Note moved to the trash | Section removed at the next sync (a single-note body is emptied, `zotero-note` removed) |
+| Section edited | Note moved to the trash | After the sync, asks: remove it from Obsidian, restore the note from the Zotero trash (then the edit is sent), or decide later. For a note deleted for good, the second choice sends the text as a new Zotero note |
+| Section emptied | Note unchanged | At the next push, asks: move the Zotero note to the Zotero trash (the section, or `zotero-note`, goes away), bring its text back from Zotero, or decide later |
+| Section emptied | Note changed | Same question, warning that Zotero's changes would go to the trash too |
+| Section emptied | Note moved to the trash | Section (or `zotero-note`) removed at the next sync |
+| Section deleted (markers too) | Note still there | Not brought back (shift-click on the sidebar's refresh to get it back); the Zotero note stays |
+| — | New note | Added as a section at the end (a single-note body gets markers) |
+| New `%%zt-note%%` section, without key | — | Sent as a new Zotero note; the key is written in the marker |
+| Text with no section and no `zotero-note` (a note created when the paper had no Zotero note) | No note | Sent as a new Zotero note; `zotero-note` is set |
+| Same | Notes not in the Obsidian note | Not sent, and Zotero's notes are not added, to avoid a duplicate. The sync and "Send…" ask: link the text to one of Zotero's notes (the Obsidian text replaces it), create a new Zotero note, keep it in Obsidian only (Zotero's notes are then added after it), or decide later. Background sends show a notice, once |
+| Text outside the sections of a note with several | — | Stays in Obsidian only |
+| Text not written by the plugin (migrated ZotLit note), no section | No note | Sent only if "Send…" is confirmed (or kept in Obsidian only) |
+
+A note deleted for good in Zotero (emptied from the trash) is not reported by Zotero's local API: its section goes away only when the paper is refreshed ("Refresh from Zotero", "Refresh all").
 
 ### Coming from ZotLit
 

@@ -107,7 +107,8 @@ interface TrackedNote {
   /**
    * A note this plugin did not create (migrated from ZotLit, or tracked again
    * after the state was lost): its text becomes a Zotero note only when the
-   * user says so ("ask"), or never ("local")
+   * user says so ("ask"), or never ("local"). "local" also stands for the
+   * text of a note left unlinked on purpose (see `confirmUnlinkedBody`)
    */
   adopted?: "ask" | "local";
 }
@@ -188,6 +189,33 @@ function wrapNoteHtml(body: string, previous: string | null): string {
 
 function noteHtml(note: ZoteroApiItem): string {
   return (note.data.note as string) || "";
+}
+
+/**
+ * The text of a note of this plugin (not adopted) that is no Zotero note: no
+ * region, no `zotero-note` property (a paper without Zotero notes when the
+ * note was created, say), else "". It becomes a Zotero note, unless Zotero
+ * has notes it would duplicate (see `confirmUnlinkedBody`).
+ */
+function orphanBody(tracked: TrackedNote, text: string): string {
+  if (tracked.adopted) return "";
+  const layout = noteLayout(text);
+  const body = text.slice(layout.contentStart, layout.contentEnd).trim();
+  return layout.regions.length === 0 && !hasZotlitSection(body) ? body : "";
+}
+
+/** The start of the text of a Zotero note, to name it in a button */
+function noteExcerpt(note: ZoteroApiItem, length = 40): string {
+  const text = (new DOMParser().parseFromString(noteHtml(note), "text/html").body.textContent || "").replace(/\s+/g, " ").trim();
+  return text.length > length ? `${text.slice(0, length)}\u2026` : text || note.key;
+}
+
+/** A section emptied in Obsidian whose Zotero note is still there (see `confirmEmptied`) */
+interface Emptied {
+  key: string;
+  note: ZoteroApiItem;
+  /** The note changed in Zotero since they were last in sync */
+  changed: boolean;
 }
 
 /** Raised when a Zotero note changed since the region pushed over it was last synced */
@@ -284,6 +312,8 @@ export class LiteratureNotes {
   private syncing: Promise<void> | null = null;
   /** Conflicts already reported ("KEY@version"), so that background pushes report each once */
   private reported = new Set<string>();
+  /** Questions asked after a sync (`ask`), one dialog after the other */
+  private questions: Promise<void> = Promise.resolve();
 
   constructor(
     private app: App,
@@ -488,6 +518,160 @@ export class LiteratureNotes {
     if (!key) return;
     await this.loadState();
     await this.locked(key, () => this.refresh(key, file, overwrite));
+    this.offerLinks([file]);
+  }
+
+  /**
+   * After a refresh, the notes whose text is no Zotero note while Zotero has
+   * notes for the paper are asked about (see `confirmUnlinkedBody`), each
+   * text once, one dialog after the other, without holding up the sync.
+   */
+  private offerLinks(files: TFile[]): void {
+    this.ask(async () => {
+      for (const file of files) {
+        const itemKey = this.keyOf(file);
+        const tracked = itemKey ? this.state.items[itemKey] : undefined;
+        if (!itemKey || !tracked || tracked.path !== file.path) continue;
+        const body = orphanBody(tracked, await this.app.vault.read(file));
+        const id = `unlinked:${itemKey}:${hash(body)}`;
+        if (!body || this.reported.has(id)) continue;
+        this.reported.add(id);
+        try {
+          const sent = await this.confirmUnlinkedBody(itemKey, file, body);
+          if (sent > 0) new Notice(`${file.basename}: ${sent} note(s) sent to Zotero.`);
+        } catch (e) {
+          console.error(`Zotero Annotations: failed to link ${file.path}`, e);
+        }
+      }
+    });
+  }
+
+  /** Queues a question (a dialog), without holding up what found it (a sync, under its lock) */
+  private ask(question: () => Promise<void>): void {
+    this.questions = this.questions.then(question).catch((e) => console.error("Zotero Annotations:", e));
+  }
+
+  /**
+   * A section edited in Obsidian whose Zotero note went to the trash (or was
+   * deleted for good): removed from Obsidian, restored in Zotero (then sent),
+   * or left for later. Asked once per note and session.
+   */
+  private async confirmGone(itemKey: string, file: TFile, key: string): Promise<void> {
+    const region = noteLayout(await this.app.vault.read(file)).regions.find((r) => r.key === key);
+    if (!region || !this.state.items[itemKey]?.regions[key]) return;
+    let trashed = false;
+    try {
+      trashed = !!(await fetchItem(key)).data.deleted;
+    } catch {
+      // deleted for good
+    }
+    const preview = region.body.replace(/\s+/g, " ").slice(0, 120);
+    const choice = await choose(
+      this.app,
+      "Note deleted in Zotero",
+      `A Zotero note of "${file.basename}" was ${trashed ? "moved to the trash" : "deleted"} in Zotero, but its ` +
+        `text was edited in Obsidian since they were last in sync:\n\n\u201c${preview}${region.body.length > 120 ? "\u2026" : ""}\u201d`,
+      [
+        "Remove it from Obsidian",
+        trashed ? "Restore it from the Zotero trash" : "Send it as a new Zotero note",
+        "Decide later",
+      ]
+    );
+    if (choice === 0) {
+      await this.locked(itemKey, () => this.dropRegion(itemKey, file, key));
+    } else if (choice === 1 && trashed) {
+      await this.locked(itemKey, async () => {
+        const { serverId } = await fetchLibraryState();
+        await this.trashNote(serverId, key, false);
+      });
+      // Back among the paper's notes: the edit goes over it
+      await this.push(file, true, { notify: false });
+    } else if (choice === 1) {
+      await this.locked(itemKey, async () => {
+        const tracked = this.state.items[itemKey];
+        if (!tracked) return;
+        delete tracked.regions[key];
+        await this.saveState();
+        // A section without key (or a body without `zotero-note`) becomes a new Zotero note
+        await this.app.vault.process(file, (text) => {
+          const layout = noteLayout(text);
+          const r = layout.regions.find((x) => x.key === key);
+          return !r || layout.bare ? text : text.slice(0, r.start) + noteRegion(null, r.body) + text.slice(r.end);
+        });
+        await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+          if (fm[SINGLE_NOTE_PROPERTY] === key) delete fm[SINGLE_NOTE_PROPERTY];
+        });
+      });
+      await this.push(file, true, { notify: false });
+    }
+  }
+
+  /**
+   * A section emptied in Obsidian: its Zotero note goes to the trash, or its
+   * text comes back from Zotero. `changed`: the note changed in Zotero since
+   * they were last in sync (those changes would go to the trash with it).
+   */
+  private async confirmEmptied(itemKey: string, file: TFile, { key, note, changed }: Emptied): Promise<number> {
+    const choice = await choose(
+      this.app,
+      "Delete the Zotero note?",
+      `A section of "${file.basename}" is now empty. Its Zotero note, \u201c${noteExcerpt(note, 120)}\u201d, can go to ` +
+        "the Zotero trash." +
+        (changed ? "\n\nThe note was changed in Zotero since they were last in sync: these changes would go to the trash too." : ""),
+      ["Move it to the Zotero trash", "Bring its text back from Zotero", "Decide later"]
+    );
+    if (choice === 0) {
+      await this.locked(itemKey, async () => {
+        const { serverId } = await fetchLibraryState();
+        await this.trashNote(serverId, key, true);
+        await this.dropRegion(itemKey, file, key);
+      });
+      return 1;
+    }
+    if (choice === 1) await this.locked(itemKey, () => this.restoreRegion(itemKey, file, key));
+    return 0;
+  }
+
+  /** Moves a note to the Zotero trash (`trash`), or out of it; a version bumped meanwhile is retried once */
+  private async trashNote(serverId: string, key: string, trash: boolean): Promise<void> {
+    const data = { deleted: trash ? 1 : 0 };
+    try {
+      await this.writer.patchItem(serverId, key, (await fetchItem(key)).version, data);
+    } catch (e) {
+      if (!(e instanceof ZoteroConflictError)) throw e;
+      await this.writer.patchItem(serverId, key, (await fetchItem(key)).version, data);
+    }
+  }
+
+  /** Removes the section of a Zotero note from the note (a single-note body: its text and `zotero-note`), and forgets it */
+  private async dropRegion(itemKey: string, file: TFile, key: string): Promise<void> {
+    await this.app.vault.process(file, (text) => {
+      const r = noteLayout(text).regions.find((x) => x.key === key);
+      return r ? (text.slice(0, r.start) + text.slice(r.end)).replace(/\n{4,}/g, "\n\n\n") : text;
+    });
+    await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+      if (fm[SINGLE_NOTE_PROPERTY] === key) delete fm[SINGLE_NOTE_PROPERTY];
+    });
+    const tracked = this.state.items[itemKey];
+    if (tracked) delete tracked.regions[key];
+    await this.saveState();
+  }
+
+  /** Writes the text of a Zotero note over its section, as Zotero has it */
+  private async restoreRegion(itemKey: string, file: TFile, key: string): Promise<void> {
+    const tracked = this.state.items[itemKey];
+    if (!tracked) return;
+    const note = await fetchItem(key);
+    const markdown = await this.noteToMarkdown(noteHtml(note), file.path);
+    await this.app.vault.process(file, (text) => {
+      const layout = noteLayout(text);
+      const r = layout.regions.find((x) => x.key === key);
+      if (!r) return text;
+      const replacement = layout.bare ? `${markdown.trim()}\n` : noteRegion(key, markdown);
+      return text.slice(0, r.start) + replacement + text.slice(r.end);
+    });
+    tracked.regions[key] = { hash: hash(markdown), html: hash(noteHtml(note)) };
+    await this.saveState();
   }
 
   /**
@@ -595,6 +779,10 @@ export class LiteratureNotes {
 
     // The Zotero note held without markers (see `noteLayout`), if any
     let single: string | null = null;
+    // Edited sections whose Zotero note was deleted (see `confirmGone`)
+    const gone = new Set<string>();
+    // Text that is no Zotero note: Zotero's notes wait for the user to say whether it is one of them (`offerLinks`)
+    const holdBack = (text: string): boolean => !overwrite && !!tracked && !!orphanBody(tracked, text);
     // The body, rewritten
     const rewrite = (text: string): string => {
       const layout = noteLayout(text);
@@ -605,14 +793,21 @@ export class LiteratureNotes {
       // Note regions: refreshed while unmodified, added when new, dropped when deleted in Zotero
       const replaced = new Map<NoteRegion, string | null>();
       const added: RenderedNote[] = [];
+      gone.clear();
+      const waiting = holdBack(text);
       for (const note of notes) {
         const region = byKey.get(note.key);
         const prev = known[note.key];
         if (!region) {
           // A region removed from the file on purpose is not brought back
-          if (!prev || overwrite) added.push(note);
-        } else if (!overwrite && prev && (prev.html !== undefined || hash(region.body) !== prev.hash) && zoteroUnchanged(prev, note.html)) {
-          // Zotero has nothing new: the text stands (edits go to Zotero by `push`)
+          if ((!prev || overwrite) && !waiting) added.push(note);
+        } else if (
+          !overwrite &&
+          prev &&
+          (!region.body.trim() || ((prev.html !== undefined || hash(region.body) !== prev.hash) && zoteroUnchanged(prev, note.html)))
+        ) {
+          // Zotero has nothing new: the text stands (edits go to Zotero by `push`). An
+          // emptied section stands too: the push asks whether its note goes to the trash
           untouched.add(note.key);
         } else if (overwrite || !prev || hash(region.body) === prev.hash) {
           replaced.set(region, note.markdown);
@@ -623,7 +818,9 @@ export class LiteratureNotes {
       for (const region of regions) {
         if (!region.key || zoteroKeys.has(region.key)) continue;
         const prev = known[region.key];
-        if (overwrite || (prev && hash(region.body) === prev.hash)) replaced.set(region, null);
+        // Deleted in Zotero: dropped unless edited here (an emptied one is dropped too), then the user decides
+        if (overwrite || !region.body.trim() || (prev && hash(region.body) === prev.hash)) replaced.set(region, null);
+        else if (prev) gone.add(region.key);
       }
 
       const remaining = [
@@ -678,7 +875,12 @@ export class LiteratureNotes {
     if (cache !== null && previousCache !== null) await this.dropImages(previousCache, cache, written);
 
     const fields = await this.writeFrontmatter(file, bundle, single);
-    await this.track(itemKey, file, bundle, notes, fields, { keptLocal: new Set([...kept, ...untouched]) });
+    await this.track(itemKey, file, bundle, notes, fields, { keptLocal: new Set([...kept, ...untouched, ...gone]) });
+    for (const key of gone) {
+      if (this.reported.has(`gone:${key}`)) continue;
+      this.reported.add(`gone:${key}`);
+      this.ask(() => this.confirmGone(itemKey, file, key));
+    }
     if (kept.length > 0) {
       new Notice(
         `${file.basename}: ${kept.length} note section(s) changed both in Obsidian and in Zotero were ` +
@@ -734,12 +936,11 @@ export class LiteratureNotes {
     const text = await this.app.vault.read(file);
     const inFile = new Set(noteLayout(text).regions.map((r) => r.key));
     for (const note of notes) {
-      if (keptLocal.has(note.key)) {
-        if (prev[note.key]) regions[note.key] = prev[note.key];
-      } else if (inFile.has(note.key) || prev[note.key]) {
-        regions[note.key] = { hash: hash(note.markdown), html: hash(note.html) };
-      }
+      if (keptLocal.has(note.key)) continue;
+      if (inFile.has(note.key) || prev[note.key]) regions[note.key] = { hash: hash(note.markdown), html: hash(note.html) };
     }
+    // Including sections whose Zotero note is gone (the user decides, see `confirmGone`)
+    for (const key of keptLocal) if (prev[key]) regions[key] = prev[key];
     const descendants = [...bundle.attachments.map((a) => a.key), ...bundle.notes.map((n) => n.key)];
     // A note first tracked here, not created by this plugin, was written by someone else
     const adopted = created ? undefined : previous?.path === file.path ? previous.adopted : "ask";
@@ -793,6 +994,24 @@ export class LiteratureNotes {
     const result = await this.locked(itemKey, () => this.doPush(itemKey, file, everyRegion));
     const { conflicts, failures, fieldEdits } = result;
     let { sent } = result;
+    // Emptied sections: asked each time the push is, else once per note
+    for (const e of result.emptied) {
+      if (!interactive && this.reported.has(`emptied:${e.key}`)) continue;
+      this.reported.add(`emptied:${e.key}`);
+      sent += await this.confirmEmptied(itemKey, file, e);
+    }
+    // Text no longer linked to the Zotero note it mirrored: asked about, else warned about once
+    if (result.unlinked) {
+      if (interactive) sent += await this.confirmUnlinkedBody(itemKey, file, result.unlinked);
+      else if (!this.reported.has(`unlinked:${itemKey}`)) {
+        this.reported.add(`unlinked:${itemKey}`);
+        new Notice(
+          `${file.basename}: its text is not linked to a Zotero note, it is not sent to Zotero. ` +
+            'Use "Send literature note edits to Zotero" to link it.',
+          10_000
+        );
+      }
+    }
     // The text of a note not written by this plugin goes to Zotero only when the user says so
     if (interactive && result.pendingBody) sent += await this.confirmAdoptedBody(itemKey, file, result.pendingBody);
     // Asked each time the push is, else once per value (after 30 s without typing, on leaving the note…)
@@ -852,17 +1071,81 @@ export class LiteratureNotes {
       return 0;
     }
     if (choice !== 0) return 0;
-    const { sent, failures } = await this.locked(itemKey, () => this.doPush(itemKey, file, false, true));
+    const { sent, failures, unlinked } = await this.locked(itemKey, () => this.doPush(itemKey, file, false, true));
     for (const failure of failures) await this.reportFailure(file, failure);
-    return sent;
+    return sent + (unlinked ? await this.confirmUnlinkedBody(itemKey, file, unlinked) : 0);
   }
 
-  /** `sendAdopted`: the body of an adopted note is sent (the user said so) */
+  /**
+   * Asks what becomes of the text of a note that is no Zotero note (see
+   * `orphanBody`) while Zotero has notes for the paper that the note does not
+   * show: linked to one of them (its text replaces Zotero's), sent as a new
+   * Zotero note, or kept in Obsidian (Zotero's notes then come after it).
+   * The number of Zotero notes sent.
+   */
+  private async confirmUnlinkedBody(itemKey: string, file: TFile, body: string): Promise<number> {
+    const bundle = await this.fetchBundle(itemKey);
+    if (!this.state.items[itemKey] || !bundle || bundle.notes.length === 0) return 0;
+    // The notes it once mirrored first
+    const known = this.state.items[itemKey].regions;
+    const notes = [...bundle.notes].sort((a, b) => Number(!known[a.key]) - Number(!known[b.key])).slice(0, 3);
+    const excerpt = body.length > 300 ? `${body.slice(0, 300)}\u2026` : body;
+    const choice = await choose(
+      this.app,
+      "Link this text to a Zotero note?",
+      `The text of "${file.basename}" is not linked to a Zotero note, and the paper has Zotero notes that are not ` +
+        "in it: it is not sent to Zotero, to avoid a duplicate. Linking it to a Zotero note replaces the text of " +
+        `that note in Zotero with this one.\n\n${excerpt}`,
+      [
+        ...notes.map((n) => `Link to \u201c${noteExcerpt(n)}\u201d`),
+        "Create a new Zotero note",
+        "Keep it in Obsidian only",
+        "Decide later",
+      ]
+    );
+    if (choice === null) return 0;
+    if (choice < notes.length) {
+      const note = notes[choice];
+      await this.locked(itemKey, async () => {
+        const tracked = this.state.items[itemKey];
+        if (!tracked) return;
+        // A note never imported: as if its text had been, so that this one is sent over it
+        tracked.regions[note.key] ??= { hash: "", html: hash(noteHtml(note)) };
+        if (!tracked.descendants.includes(note.key)) tracked.descendants.push(note.key);
+        await this.saveState();
+        await this.app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+          fm[SINGLE_NOTE_PROPERTY] = note.key;
+        });
+      });
+      return this.push(file, true, { notify: false });
+    }
+    if (choice === notes.length) {
+      const { sent, failures } = await this.locked(itemKey, () => this.doPush(itemKey, file, false, false, true));
+      for (const failure of failures) await this.reportFailure(file, failure);
+      return sent;
+    }
+    if (choice === notes.length + 1) {
+      await this.locked(itemKey, async () => {
+        const tracked = this.state.items[itemKey];
+        if (tracked) tracked.adopted = "local";
+        await this.saveState();
+      });
+      // Zotero's notes, held back while undecided, come in
+      await this.update(file);
+    }
+    return 0;
+  }
+
+  /**
+   * `sendAdopted`: the body of an adopted note is sent (the user said so);
+   * `sendUnlinked`: the body becomes a new Zotero note even if Zotero has others (see `confirmUnlinkedBody`)
+   */
   private async doPush(
     itemKey: string,
     file: TFile,
     all: boolean,
-    sendAdopted = false
+    sendAdopted = false,
+    sendUnlinked = false
   ): Promise<{
     sent: number;
     conflicts: Conflict[];
@@ -870,22 +1153,32 @@ export class LiteratureNotes {
     fieldEdits: FieldEdit[];
     /** Text of an adopted note that would become a Zotero note, waiting for the user */
     pendingBody: string;
+    /** Text that would become a Zotero note while Zotero has others, waiting for the user */
+    unlinked: string;
+    /** Sections emptied in Obsidian: their Zotero notes may go to the trash, the user decides */
+    emptied: Emptied[];
   }> {
-    const none = { sent: 0, conflicts: [], failures: [], fieldEdits: [], pendingBody: "" };
+    const none = { sent: 0, conflicts: [], failures: [], fieldEdits: [], pendingBody: "", unlinked: "", emptied: [] };
     const tracked = this.state.items[itemKey];
     if (!tracked || tracked.path !== file.path) return none;
     const text = await this.app.vault.read(file);
     const layout = noteLayout(text);
+    // An emptied region is not sent: Zotero notes are not deleted from Obsidian
     const edited = layout.regions.filter(
-      (r) => !r.key || (tracked.regions[r.key] && (all || hash(r.body) !== tracked.regions[r.key].hash))
+      (r) =>
+        r.body.trim() &&
+        (!r.key || (tracked.regions[r.key] && (all || hash(r.body) !== tracked.regions[r.key].hash)))
     );
-    // The body of a paper that never had Zotero notes becomes one, unless
-    // ZotLit manages part of it, or it was not written here and the user did not say so
+    const emptiedKeys = layout.regions.flatMap((r) =>
+      r.key && !r.body.trim() && tracked.regions[r.key] && tracked.regions[r.key].hash !== hash(r.body) ? [r.key] : []
+    );
+    // A body that is no Zotero note becomes one, unless ZotLit manages part
+    // of it, or it was not written here and the user did not say so
     const body = text.slice(layout.contentStart, layout.contentEnd).trim();
     const noteless = layout.regions.length === 0 && Object.keys(tracked.regions).length === 0;
-    const candidate = noteless && !hasZotlitSection(body) ? body : "";
-    const pendingBody = candidate && tracked.adopted === "ask" && !sendAdopted ? candidate : "";
-    const newBody = candidate && (!tracked.adopted || (tracked.adopted === "ask" && sendAdopted)) ? candidate : "";
+    const adoptedBody = tracked.adopted === "ask" && noteless && !hasZotlitSection(body) ? body : "";
+    const pendingBody = adoptedBody && !sendAdopted ? adoptedBody : "";
+    let newBody = adoptedBody && sendAdopted ? adoptedBody : orphanBody(tracked, text);
     // Properties edited since the last sync (see `item-fields.ts`)
     const fm = frontmatterOf(text);
     const bases = tracked.fields ?? {};
@@ -894,12 +1187,25 @@ export class LiteratureNotes {
       const base = bases[field.property];
       return local !== null && base !== undefined && !sameValue(field, local, base) ? [{ field, local, base }] : [];
     });
-    if (edited.length === 0 && !newBody && editedFields.length === 0) return { ...none, pendingBody };
+    if (edited.length === 0 && !newBody && editedFields.length === 0 && emptiedKeys.length === 0) {
+      return { ...none, pendingBody };
+    }
 
     const bundle = await this.fetchBundle(itemKey);
     if (!bundle) return none;
+    // Zotero has notes this text would duplicate (not imported for some reason): the user decides
+    let unlinked = "";
+    if (newBody && bundle.notes.length > 0 && !sendUnlinked) {
+      unlinked = newBody;
+      newBody = "";
+    }
     const { serverId } = await fetchLibraryState();
     const notes = new Map(bundle.notes.map((n) => [n.key, n]));
+    // (deleted in Zotero too: the next refresh removes them)
+    const emptied = emptiedKeys.flatMap((key) => {
+      const note = notes.get(key);
+      return note ? [{ key, note, changed: !zoteroUnchanged(tracked.regions[key], noteHtml(note)) }] : [];
+    });
     const conflicts: Conflict[] = [];
     const failures: ConversionError[] = [];
     const created: { key: string; body: string }[] = [];
@@ -990,7 +1296,7 @@ export class LiteratureNotes {
     const newKeys = [...created.map((c) => c.key), ...(single ? [single] : [])];
     tracked.descendants.push(...newKeys);
     await this.saveState();
-    return { sent: sent + newKeys.length, conflicts, failures, fieldEdits, pendingBody };
+    return { sent: sent + newKeys.length, conflicts, failures, fieldEdits, pendingBody, unlinked, emptied };
   }
 
   /** Updates fields of an item; a version bumped meanwhile (Zotero does it on its own) is retried once */
@@ -1160,15 +1466,7 @@ export class LiteratureNotes {
         const seen: RegionState = { hash: "", html: hash(noteHtml(note)) };
         tracked.regions[conflict.key] = await this.updateNote(serverId, bundle, file, conflict.key, region.body, note, seen);
       } else {
-        const markdown = await this.noteToMarkdown(noteHtml(note), file.path);
-        await this.app.vault.process(file, (text) => {
-          const r = noteLayout(text).regions.find((x) => x.key === conflict.key);
-          if (!r) return text;
-          const layout = noteLayout(text);
-          const replacement = layout.bare ? `${markdown.trim()}\n` : noteRegion(r.key, markdown);
-          return text.slice(0, r.start) + replacement + text.slice(r.end);
-        });
-        tracked.regions[conflict.key] = { hash: hash(markdown), html: hash(noteHtml(note)) };
+        await this.restoreRegion(itemKey, file, conflict.key);
       }
       this.reported.delete(`${conflict.key}@${conflict.note.version}`);
       await this.saveState();
@@ -1236,6 +1534,7 @@ export class LiteratureNotes {
     }
 
     let done = 0;
+    const refreshed: TFile[] = [];
     for (const key of affected) {
       onProgress?.(done++, affected.size);
       const file = this.findNote(key);
@@ -1245,6 +1544,7 @@ export class LiteratureNotes {
       }
       try {
         await this.locked(key, () => this.refresh(key, file));
+        refreshed.push(file);
         result.refreshed++;
       } catch (e) {
         result.failed++;
@@ -1253,6 +1553,7 @@ export class LiteratureNotes {
     }
     this.state.libraryVersion = lib.version;
     await this.saveState();
+    this.offerLinks(refreshed);
     return result;
   }
 

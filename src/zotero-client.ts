@@ -318,12 +318,13 @@ export async function fetchLibraryState(): Promise<LibraryState> {
 /**
  * Keys of the items (of any type: papers, notes, attachments, annotations)
  * modified after `since`, with the library version they were read at.
- * Deletions are not reported: the local API has no `/deleted` endpoint.
+ * Items moved to the trash are included (a trashed note changes its paper);
+ * items deleted for good are not: the local API has no `/deleted` endpoint.
  */
 export async function fetchChangedItems(
   since: number
 ): Promise<{ version: number; changed: Record<string, number> }> {
-  const res = await zoteroRequest({ url: `${ZOTERO_BASE}/items?since=${since}&format=versions` });
+  const res = await zoteroRequest({ url: `${ZOTERO_BASE}/items?since=${since}&format=versions&includeTrashed=1` });
   return {
     version: parseInt(header(res, "Last-Modified-Version") || "0", 10),
     changed: (res.json as Record<string, number>) || {},

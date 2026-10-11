@@ -107,14 +107,22 @@ the note it replaces. Wikilinks to literature notes (resolved in `regionHtml`, `
 citations of their paper (the alias as text, parentheses kept around the `citation-item`), and `noteToMarkdown`
 turns citations without locator of a paper with a literature note into `[[note|text]]`. Whether Zotero changed a note is decided by the hash of its HTML (`RegionState.html`;
 Zotero bumps versions without changes); changed on both sides → `choose` modal (interactive push) or a
-one-time notice. Keyless regions, and the body of a paper without Zotero notes, become new Zotero notes.
+one-time notice. Keyless regions, and the body of a paper without Zotero notes, become new Zotero notes. A body that is no Zotero note
+(`orphanBody`: no region, no `zotero-note`, not adopted) becomes one only while Zotero has no note for the paper;
+otherwise a refresh holds Zotero's notes back and `offerLinks` (after a sync, once per text) or an interactive push asks
+(`confirmUnlinkedBody`): link it to a Zotero note, create a new one, keep it local; background pushes warn once. An
+emptied section (or single-note body, which keeps its `zotero-note`) is never sent: the push asks (`confirmEmptied`)
+whether its note goes to the Zotero trash (`PATCH {deleted: 1}`) or its text comes back; an edited section whose note was
+trashed is asked about after the refresh (`confirmGone`: remove, restore from the trash, or send as a new note). Dialogs
+found during a sync wait in a queue (`ask`). Change detection uses `includeTrashed=1`, so a trashed
+note refreshes its paper (README "When Obsidian and Zotero differ" lists every case).
 Pushes run on leaving the note, 30 s after the last edit, before each sync, and by command; a failed push
 is simply retried (the region hashes are the queue). Regions deleted in Obsidian are not deleted in Zotero.
 State
 (per-item region versions/hashes, descendant keys, server ID, library version) lives in
 `<plugin dir>/literature-notes.json`. Sync asks `items?since=<libraryVersion>&format=versions`
 and maps changed keys to tracked papers through their descendants (two parent hops for new
-children). The local API never reports deletions (no `/deleted`), and versions are only valid
+children). The local API never reports permanent deletions (no `/deleted`), and versions are only valid
 for one `Zotero-Server-ID`. Write access (`ZoteroWriter`, Zotero 10+) needs a key from
 `/local/authorize`; embedded-image uploads are refused by Zotero.
 Bulk commands: "Refresh all" (`refreshAll`, a full `doSync` over every tracked note, edited regions kept),

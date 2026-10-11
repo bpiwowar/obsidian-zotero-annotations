@@ -341,8 +341,9 @@ export function noteLayout(full: string): NoteLayout {
     // unreadable frontmatter
   }
   const body = text.slice(info.contentStart);
-  // A body with ZotLit's section is not a Zotero note: ZotLit rewrites it
-  if (typeof key !== "string" || !/^[A-Z0-9]{8}$/.test(key) || !body.trim() || hasZotlitSection(body)) {
+  // A body with ZotLit's section is not a Zotero note: ZotLit rewrites it. An
+  // empty body still is (being rewritten): a refresh would otherwise drop the property
+  if (typeof key !== "string" || !/^[A-Z0-9]{8}$/.test(key) || hasZotlitSection(body)) {
     return { regions: [], bare: false, contentStart: info.contentStart, contentEnd };
   }
   return {
